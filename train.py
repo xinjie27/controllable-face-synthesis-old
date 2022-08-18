@@ -196,10 +196,7 @@ def main(**kwargs):
     c.G_kwargs.channel_base = c.D_kwargs.channel_base = opts.cbase
     c.G_kwargs.channel_max = c.D_kwargs.channel_max = opts.cmax
 
-    c.G_kwargs.gbuffer_channels = 10
-
-
-
+    c.G_kwargs.gbuffer_channels = 10 # Color 3, Texture 3, Norm 3, Depth 1
 
     c.G_kwargs.mapping_kwargs.num_layers = opts.map_depth
     c.D_kwargs.block_kwargs.freeze_layers = opts.freezed
@@ -227,13 +224,13 @@ def main(**kwargs):
     # Base configuration.
     c.ema_kimg = c.batch_size * 10 / 32
     c.G_kwargs.class_name = 'training.networks_stylegan2.Generator'
-   # c.loss_kwargs.style_mixing_prob = 0.9 # Enable style mixing regularization.
-   # c.loss_kwargs.pl_weight = 2 # Enable path length regularization.
-   # c.G_reg_interval = 4 # Enable lazy regularization for G.
+    # c.loss_kwargs.style_mixing_prob = 0.9 # Enable style mixing regularization.
+    # c.loss_kwargs.pl_weight = 2 # Enable path length regularization.
+    # c.G_reg_interval = 4 # Enable lazy regularization for G.
     c.G_kwargs.fused_modconv_default = 'inference_only' # Speed up training by using regular convolutions instead of grouped convolutions.
-   # c.loss_kwargs.pl_no_weight_grad = True # Speed up path length regularization by skipping gradient computation wrt. conv2d weights.
+    # c.loss_kwargs.pl_no_weight_grad = True # Speed up path length regularization by skipping gradient computation wrt. conv2d weights.
 
-    c.G_kwargs.use_noise = False
+    #c.G_kwargs.use_noise = False
 
     # Augmentation.
     if opts.aug != 'noaug':
