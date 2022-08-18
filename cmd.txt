@@ -1,0 +1,11 @@
+python dataset_tool.py --source=../FFHQ/class_1 --dest=./datasets/ffhq-256x256.zip --resolution=256x256
+
+python train.py --outdir=./training-runs --cfg=stylegan2 --data=./datasets/ffhq-256x256.zip --gpus=1 --batch=64 --gamma=1 --cbase=16384 --glr=0.0025 --dlr=0.0025 --mbstd-group=8 --mirror=1 --aug=noaug --tick=1 --fp32=True --batch-gpu=16
+
+python calc_metrics.py --network=./training-runs/00000-stylegan2-ffhq-256x256-gpus1-batch64-gamma1/network-snapshot-003123.pkl
+
+python train.py --outdir=./training-runs --cfg=stylegan3-r --data=./datasets/ffhq-256x256.zip --gpus=1 --batch=64 --gamma=1 --mirror=1 --aug=noaug --cbase=16384 --dlr=0.0025 --tick=1 --fp32=True --batch-gpu=8
+
+python train.py --outdir=./training-runs --data=./datasets/ffhq-masked-128x128.zip --gpus=1 --batch=64 --gamma=1 --cbase=16384 --glr=0.0025 --dlr=0.0025 --mbstd-group=8 --mirror=0 --aug=noaug --tick=1 --fp32=True --batch-gpu=16 --metrics=none
+
+
