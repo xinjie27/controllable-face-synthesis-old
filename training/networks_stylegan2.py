@@ -532,9 +532,9 @@ class SynthesisNetwork(torch.nn.Module):
             setattr(self, f'b{res}', block)
 
     def forward(self, m, ws, **block_kwargs):
-        RenderedFace, RenderedMask = renderer128.render(m)
+        RenderedFace, RenderedMask, RenderedDepth = renderer128.render(m)
 
-        gbuffers = [RenderedFace]
+        gbuffers = [torch.cat([RenderedFace, RenderedDepth],dim=1)]
         res = 128
         while (res > 4):
             res = res // 2

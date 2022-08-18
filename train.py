@@ -196,7 +196,7 @@ def main(**kwargs):
     c.G_kwargs.channel_base = c.D_kwargs.channel_base = opts.cbase
     c.G_kwargs.channel_max = c.D_kwargs.channel_max = opts.cmax
 
-    c.G_kwargs.gbuffer_channels = 3
+    c.G_kwargs.gbuffer_channels = 4
 
 
 

@@ -9,7 +9,7 @@ import dnnlib
 from torch_utils import misc
 from renderer import renderer128
 
-MODEL_PATH = "./training-runs/00000-ffhq-masked-128x128-gpus1-batch64-gamma1/network-snapshot-002662.pkl"
+MODEL_PATH = "./training-runs/naive_gbuffer/network-snapshot-002662.pkl"
 FILEPATH = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224/*"
 
 
