@@ -1,0 +1,6 @@
+venv/
+datasets/
+__pycache__/
+training-runs/
+
+Deep3DFaceRecon/

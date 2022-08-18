@@ -218,8 +218,8 @@ class MappingNetwork(torch.nn.Module):
             embed_features = 0
         if layer_features is None:
             layer_features = w_dim
-        #features_list = [z_dim + m_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
-        features_list = [m_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
+        features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
+        
 
         if c_dim > 0:
             self.embed = FullyConnectedLayer(c_dim, embed_features)
@@ -232,16 +232,24 @@ class MappingNetwork(torch.nn.Module):
         if num_ws is not None and w_avg_beta is not None:
             self.register_buffer('w_avg', torch.zeros([w_dim]))
 
-      #  self.calc_z_mean_from_m = FullyConnectedLayer(m_dim, z_dim, bias=False, activation='linear', lr_multiplier=lr_multiplier)
+        self.calc_z_mean_from_m = FullyConnectedLayer(m_dim, z_dim, bias=False, activation='linear')
+        self.calc_z_std_from_m = FullyConnectedLayer(m_dim, z_dim, bias_init=1, activation='linear')
 
     def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
+        m = m.to(torch.float32)
+        z_mean = self.calc_z_mean_from_m(m)
+        z_std = self.calc_z_mean_from_m(m)
+        z = z_mean + z_std * z.to(torch.float32)
+
+
+
+
         # Embed, normalize, and concat inputs.
         x = None
         with torch.autograd.profiler.record_function('input'):
             if self.z_dim > 0:
                 misc.assert_shape(z, [None, self.z_dim])
-                x = m.to(torch.float32)
-                # x = torch.cat([z.to(torch.float32), m.to(torch.float32)], dim=1)
+                x = z
                 # x = normalize_2nd_moment(z)
             if self.c_dim > 0:
                 misc.assert_shape(c, [None, self.c_dim])
