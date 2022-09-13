@@ -21,11 +21,11 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import torch
 from renderer import Renderer
-from util import util
+from Deep3DFaceRecon.util import util
 
-from options.test_options import TestOptions
-from util.load_mats import load_lm3d
-from util.preprocess import align_img
+from Deep3DFaceRecon.options.test_options import TestOptions
+from Deep3DFaceRecon.util.load_mats import load_lm3d
+from Deep3DFaceRecon.util.preprocess import align_img
 from PIL import Image
 
 '''
@@ -120,7 +120,7 @@ def preprocess(img_dir):
     """
     detector = MTCNN()
 
-    img_list = glob.glob(f'{img_dir}/*/*.png')
+    img_list = glob.glob(f'{img_dir}/*.png')
     # print(img_list)
 
     for img_file in img_list:
@@ -139,7 +139,7 @@ def preprocess(img_dir):
         # if os.path.isdir(img_path): continue
         
         img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
-
+        print(img.shape)
         try:
             facial_landmarks = detector.detect_faces(img)[0]["keypoints"]
         except IndexError:
@@ -205,6 +205,39 @@ def mask_background(img_paths, coeffs_dir, size = 224):
         if not os.path.exists(os.path.split(out_path)[0]):
             os.mkdir(os.path.split(out_path)[0])
         util.save_image(util.tensor2im(output), out_path)
+        print(out_path)
+
+    return
+
+def test_align(img_paths, coeffs_dir, size = 224):
+    renderer = Renderer(resolution=size)
+    coeffs_paths = [f'{coeffs_dir}/{os.path.split(im)[1].replace("png","npy")}' for im in img_paths]
+    print(len(img_paths), len(coeffs_paths))    
+    for img_path, coeffs_path in list(zip(img_paths, coeffs_paths)):
+        if not os.path.exists(coeffs_path):
+            continue
+        coeffs = get_coeff_npy(coeffs_path)
+        img_tensor = renderer.render(coeffs)[0]
+        output_path = f'test/align/{os.path.basename(img_path)}'
+        renderer.visualize(img_tensor, path=output_path)
+        print(output_path)
+    return
+
+def align(img_paths, size = 224):
+    lm_paths = [im.replace("png","txt") for im in img_paths]
+    opt = TestOptions().parse()
+    lm3d_std = load_lm3d(opt.bfm_folder)
+    for img_path, landmarks_path in list(zip(img_paths, lm_paths)):
+        if not os.path.exists(landmarks_path):
+            continue
+        out_path = img_path.replace(f"ffhq-{size}x{size}", f"ffhq-{size}x{size}_aligned")
+        if os.path.exists(out_path):
+            continue
+        if not os.path.exists(os.path.split(out_path)[0]):
+            os.mkdir(os.path.split(out_path)[0])
+        img_tensor = preprocess_img(img_path, landmarks_path, lm3d_std)
+        
+        util.save_image(util.tensor2im(img_tensor.squeeze()), out_path)
         print(out_path)
 
     return
@@ -312,19 +345,24 @@ if __name__ == "__main__":
     
     # Step 1: preprocess ffhq data
     # print("=====preprocessing=====")
-    REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224'
+    # REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224'
+    # REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/test'
     # preprocess(REAL_IMG_DIR)
 
     # Step 2: call Deep3dRecon model
     # print("Calling model...")
-    coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
+    # coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
     # call_model(config, coeffs_dir, REAL_IMG_DIR)
 
     # step 3: replace background with 0 in ffhq
-    img_path = get_data_path(REAL_IMG_DIR)
+    # img_path = get_data_path(REAL_IMG_DIR)
     # output_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224_masked'
-    mask_background(img_path, coeffs_dir)
+    # mask_background(img_path, coeffs_dir)
 
+    img_paths = get_data_path('/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224')
+    coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
+    # test_align(img_paths, coeffs_dir)
+    align(img_paths)
 
     # analyze data
     # coeff_list = []

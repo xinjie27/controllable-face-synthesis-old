@@ -218,7 +218,8 @@ class MappingNetwork(torch.nn.Module):
             embed_features = 0
         if layer_features is None:
             layer_features = w_dim
-        features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
+        #features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
+        features_list = [z_dim + m_dim] + [layer_features] * (num_layers - 1) + [w_dim]
         
 
         if c_dim > 0:
@@ -232,14 +233,15 @@ class MappingNetwork(torch.nn.Module):
         if num_ws is not None and w_avg_beta is not None:
             self.register_buffer('w_avg', torch.zeros([w_dim]))
 
-        self.calc_z_mean_from_m = FullyConnectedLayer(m_dim, z_dim, bias=False, activation='linear')
-        self.calc_z_std_from_m = FullyConnectedLayer(m_dim, z_dim, bias_init=1, activation='linear')
+      #  self.calc_z_mean_from_m = FullyConnectedLayer(m_dim, z_dim, bias=False, activation='linear')
+      #  self.calc_z_std_from_m = FullyConnectedLayer(m_dim, z_dim, bias_init=1, activation='linear')
 
     def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         m = m.to(torch.float32)
-        z_mean = self.calc_z_mean_from_m(m)
-        z_std = self.calc_z_mean_from_m(m)
-        z = z_mean + z_std * z.to(torch.float32)
+       # z_mean = self.calc_z_mean_from_m(m)
+       # z_std = self.calc_z_mean_from_m(m)
+    #    z = z_mean + z_std * z.to(torch.float32)
+        z = torch.cat([m, z.to(torch.float32)], dim=1)
 
 
 
@@ -248,7 +250,7 @@ class MappingNetwork(torch.nn.Module):
         x = None
         with torch.autograd.profiler.record_function('input'):
             if self.z_dim > 0:
-                misc.assert_shape(z, [None, self.z_dim])
+              #  misc.assert_shape(z, [None, self.z_dim])
                 x = z
                 # x = normalize_2nd_moment(z)
             if self.c_dim > 0:
@@ -373,7 +375,7 @@ class ToRGBLayer(torch.nn.Module):
         self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
         self.weight_gain = 1 / np.sqrt(in_channels * (kernel_size ** 2))
 
-        self.weight.data.zero_()
+       # self.weight.data.zero_()
 
     def forward(self, x, w, fused_modconv=True):
         styles = self.affine(w) * self.weight_gain
@@ -531,14 +533,20 @@ class SynthesisNetwork(torch.nn.Module):
                 self.num_ws += block.num_torgb
             setattr(self, f'b{res}', block)
 
-    def forward(self, m, ws, **block_kwargs):
-        RenderedFace, RenderedMask, RenderedDepth, RenderedFaceTex, RenderedFaceNorm = renderer128.render(m)
+    def forward(self, m, ws, alpha=1, **block_kwargs):
+        RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = renderer128.render(m)
 
-        # renderer128.visualize(RenderedDepth[0], path='./depth.png')
+        Zeros = torch.ones_like(RenderedFace, device=RenderedFace.device)
+        RenderedFace = RenderedFace * RenderedMask + Zeros * (1 - RenderedMask)
+        RenderedFaceTex = RenderedFaceTex * RenderedMask + Zeros * (1 - RenderedMask)
+
+        # renderer128.visualize(RenderedDepth[0].repeat(1, 3, 1, 1), path='./depth.png')
+        # renderer128.visualize(RenderedFaceVertex[0], path='./vertex.png')
         # renderer128.visualize(RenderedFace[0], path='./face.png')
         # renderer128.visualize(RenderedFaceTex[0], path='./tex.png')
         # renderer128.visualize(RenderedFaceNorm[0], path='./norm.png')
-        gbuffers = [torch.cat([RenderedFace, RenderedDepth, RenderedFaceTex, RenderedFaceNorm],dim=1)]
+
+        gbuffers = [torch.cat([RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm],dim=1)]
         res = 128
         while (res > 4):
             res = res // 2
@@ -562,10 +570,11 @@ class SynthesisNetwork(torch.nn.Module):
             block = getattr(self, f'b{res}')
             x, img = block(x, gbuffers.pop(0), img, cur_ws, **block_kwargs)
 
-        
+        BlendedOutput = img * alpha + RenderedFace * (1. - alpha)
         BlackBackground = -torch.ones_like(img, device=img.device)
+        BlendedOutput = BlendedOutput * RenderedMask + BlackBackground * (1 - RenderedMask)
 
-        return (img + RenderedFace) * RenderedMask + BlackBackground * (1 - RenderedMask)
+        return img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks
 
     def extra_repr(self):
         return ' '.join([
@@ -599,10 +608,14 @@ class Generator(torch.nn.Module):
         self.num_ws = self.synthesis.num_ws
         self.mapping = MappingNetwork(z_dim=z_dim, m_dim=m_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
         
-    def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
+    def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, alpha=1, aux_output=False, **synthesis_kwargs):
         ws = self.mapping(z, m, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        img = self.synthesis(m, ws, update_emas=update_emas, **synthesis_kwargs)
-        return img
+        img, BlendedOutput, RenderedFace = self.synthesis(m, ws, alpha, update_emas=update_emas, **synthesis_kwargs)[0:3]
+
+        if aux_output:
+            return img, RenderedFace
+        else:
+            return img
 
 #----------------------------------------------------------------------------
 

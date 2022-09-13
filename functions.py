@@ -1,19 +1,17 @@
 import torch
 import numpy as np
 import glob
+import os
+import contextlib
 from scipy.io import loadmat
 from renderer import Renderer
 
-# class Sampler():
-#     def __init__(self,
-#         mean_file = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/3DMM_stats/3dmm_mean.npy",
-#         stddev_file = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/3DMM_stats/3dmm_stddev.npy"):
-
-#         self.mean = np.load(mean_file)
-#         self.stddev = np.load(stddev_file)
-    
-#     def sample_m(self, batch_size):
-#         return torch.randn(batch_size, 257) * self.stddev + self.mean
+def supress_stdout(func):
+    def wrapper(*a, **ka):
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull):
+                return func(*a, **ka)
+    return wrapper
 
 
 class Sampler():

@@ -8,8 +8,9 @@ import pickle
 import dnnlib
 from torch_utils import misc
 from renderer import renderer128
+from Deep3DFaceRecon.util import util
 
-MODEL_PATH = "./training-runs/naive_gbuffer/network-snapshot-002662.pkl"
+MODEL_PATH = "./training-runs/3dmm_loss_fail1/network-snapshot-002355.pkl"
 FILEPATH = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224/*"
 
 
@@ -28,7 +29,7 @@ class Data():
 data = Data()
 
 
-def _save_img(img):
+def _scale_img(img):
     lo, hi = [-1, 1]
     img = np.asarray(img, dtype=np.float32)
     img = (img - lo) * (255 / (hi - lo))
@@ -48,12 +49,18 @@ def generate():
     data.z = z
     data.coeffs = coeffs
     c = None
-    image_npy = G(z, coeffs, c).detach().cpu().numpy()
+    image_npy = G(z, coeffs, c)[0].detach().cpu().numpy()
     image_npy = image_npy.squeeze().transpose((1, 2, 0))
-    image_npy = _save_img(image_npy)
+    image_npy = _scale_img(image_npy)
     image = ImageTk.PhotoImage(Image.fromarray(image_npy))
     label_img.configure(image=image)
     label_img.image = image
+    img_rdr_npy = renderer128.render(data.coeffs)[0]
+    img_rdr_npy = img_rdr_npy.cpu().numpy().squeeze().transpose((1, 2, 0))
+    img_rdr_npy = _scale_img(img_rdr_npy)
+    image_rdr = ImageTk.PhotoImage(Image.fromarray(img_rdr_npy))
+    label_img_rdr.configure(image=image_rdr)
+    label_img_rdr.image = image_rdr
 
 
 # Set up the window
@@ -128,6 +135,13 @@ trans_label = tk.Label(window, text="Translation")
 trans_label.grid(row=7, column=0)
 trans_slider.grid(row=7, column=1)
 
+z_var = tk.DoubleVar()
+z_slider = tk.Scale(window, variable=z_var, from_=scale_lo, to=scale_hi, orient="horizontal", resolution=0.01)
+z_slider.set(1)
+z_label = tk.Label(window, text="z vector")
+z_label.grid(row=8, column=0)
+z_slider.grid(row=8, column=1)
+
 
 frame_p = tk.Frame(master=window)
 label_img_new = tk.Label(master=frame_p)
@@ -135,30 +149,31 @@ label_img_new.pack(side=tk.LEFT)
 frame_p.grid(row=1, column=1)
 
 
-frame_r = tk.Frame(master=window)
-label_img_rdr = tk.Label(master=frame_r)
+frame_rdr = tk.Frame(master=window)
+label_img_rdr = tk.Label(master=frame_rdr)
 label_img_rdr.pack(side=tk.LEFT)
-frame_r.grid(row=1, column=2)
+frame_rdr.grid(row=1, column=2)
 
 def perturb():
     scale_factor = torch.Tensor(np.array([id_var.get()] * 80 + [exp_var.get()] * 64 + [tex_var.get()] * 80 + [angle_var.get()] * 3 + [gamma_var.get()] * 27 + [trans_var.get()] * 3)).to(device)
     c = None
-    img_new_npy = G(data.z, scale_factor * data.coeffs, c).detach().cpu().numpy()
+    z = data.z * z_var.get()
+    img_new_npy = G(z, scale_factor * data.coeffs, c)[0].detach().cpu().numpy()
     img_new_npy = img_new_npy.squeeze().transpose((1, 2, 0))
-    img_new_npy = _save_img(img_new_npy)
+    img_new_npy = _scale_img(img_new_npy)
     image_new = ImageTk.PhotoImage(Image.fromarray(img_new_npy))
     label_img_new.configure(image=image_new)
     label_img_new.image = image_new
-    img_rdr_npy, _ = renderer128.render(scale_factor * data.coeffs)
+    img_rdr_npy = renderer128.render(scale_factor * data.coeffs)[0]
     img_rdr_npy = img_rdr_npy.cpu().numpy().squeeze().transpose((1, 2, 0))
-    img_rdr_npy = _save_img(img_rdr_npy)
+    img_rdr_npy = _scale_img(img_rdr_npy)
     image_rdr = ImageTk.PhotoImage(Image.fromarray(img_rdr_npy))
     label_img_rdr.configure(image=image_rdr)
     label_img_rdr.image = image_rdr
 
 
 button_p = tk.Button(master=window, text="Perturb", command=perturb)
-button_p.grid(row=8, column=1, pady=10)
+button_p.grid(row=9, column=3, pady=10)
 
 
 # Reset
@@ -169,14 +184,59 @@ def reset():
     angle_slider.set(1)
     gamma_slider.set(1)
     trans_slider.set(1)
+    z_slider.set(1)
     generate()
     perturb()
 
+# Resample z
+def resample_z():
+    z = torch.randn(1, 512).to(device)
+    data.z = z
+    c = None
+    image_npy = G(z, data.coeffs, c).detach().cpu().numpy()
+    image_npy = image_npy.squeeze().transpose((1, 2, 0))
+    image_npy = _scale_img(image_npy)
+    image = ImageTk.PhotoImage(Image.fromarray(image_npy))
+    label_img.configure(image=image)
+    label_img.image = image
+    img_rdr_npy = renderer128.render(data.coeffs)[0]
+    img_rdr_npy = img_rdr_npy.cpu().numpy().squeeze().transpose((1, 2, 0))
+    img_rdr_npy = _scale_img(img_rdr_npy)
+    image_rdr = ImageTk.PhotoImage(Image.fromarray(img_rdr_npy))
+    label_img_rdr.configure(image=image_rdr)
+    label_img_rdr.image = image_rdr
 
-frame_r = tk.Frame(master=window)
+def smooth_z():
+    z1 = torch.randn(1, 512).to(device)
+    z2 = torch.randn(1, 512).to(device)
+    c = None
+    z1_image_npy = G(z1, data.coeffs, c).detach().cpu().numpy()
+    z1_image_npy = z1_image_npy.squeeze().transpose((1, 2, 0))
+    z1_image_npy = _scale_img(z1_image_npy)
+    util.save_image(z1_image_npy, 'test/z1.png')
+    z2_image_npy = G(z2, data.coeffs, c).detach().cpu().numpy()
+    z2_image_npy = z2_image_npy.squeeze().transpose((1, 2, 0))
+    z2_image_npy = _scale_img(z2_image_npy)
+    util.save_image(z2_image_npy, 'test/z2.png')
+
+    n = 100
+    for i in range(n):
+        z = z1 + (z2 - z1) / n * (i+1)
+        z_image_npy = G(z, data.coeffs, c).detach().cpu().numpy()
+        z_image_npy = z_image_npy.squeeze().transpose((1, 2, 0))
+        z_image_npy = _scale_img(z_image_npy)
+        util.save_image(z_image_npy, f'test/{i+1}.png')
+
+
+# frame_r = tk.Frame(master=window)
 button_r = tk.Button(master=window, text="Reset", command=reset)
-button_r.grid(row=8, column=0, pady=10)
+button_r.grid(row=9, column=0, pady=10)
 
+button_z = tk.Button(master=window, text="Resample z", command=resample_z)
+button_z.grid(row=9, column=1, pady=10)
+
+# button_z = tk.Button(master=window, text="Smooth z", command=smooth_z)
+# button_z.grid(row=9, column=2, pady=10)
 
 
 # Start the demo

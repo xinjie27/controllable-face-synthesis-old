@@ -43,7 +43,7 @@ def get_config():
 class Renderer():
     def __init__(self, resolution, rank=0):
         opt = TestOptions().parse()
-        print("opt: ", opt)
+        self.opt = opt
         self.model = create_model(opt)
         device = torch.device(rank)
         self.model.setup(opt)
@@ -54,19 +54,20 @@ class Renderer():
         self.resolution = resolution
 
     def render(self, coeffs):
-        with torch.no_grad():
-            pred_mask, pred_face_color, pred_depth, pred_face_tex, pred_face_norm = self.model.forward2(coeffs)
-            # img_tensor = self.model.render(pred_mask, pred_face)
-            img_tensor = pred_mask * pred_face_color
-            scaleF = self.resolution / 224
-            img_tensor = F.interpolate(img_tensor, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
-            pred_mask = F.interpolate(pred_mask, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
-            pred_depth = F.interpolate(pred_depth, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
-            pred_face_tex = F.interpolate(pred_face_tex, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
-            pred_face_norm = F.interpolate(pred_face_norm, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
-            img_tensor = img_tensor * 2 - 1 # Change the range to [-1, 1]
-            pred_face_tex = pred_face_tex * 2 - 1
-            return img_tensor.detach(), pred_mask.detach(), pred_depth.detach(), pred_face_tex.detach(), pred_face_norm.detach()
+        pred_mask, pred_face_color, pred_face_vertex, pred_face_tex, pred_face_norm, pred_lm = self.model.forward2(coeffs)
+        # img_tensor = self.model.render(pred_mask, pred_face)
+
+        img_tensor = pred_mask * pred_face_color
+        scaleF = self.resolution / 224
+        img_tensor = F.interpolate(img_tensor, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
+        pred_mask = F.interpolate(pred_mask, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
+        pred_face_vertex = F.interpolate(pred_face_vertex, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
+        pred_face_tex = F.interpolate(pred_face_tex, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
+        pred_face_norm = F.interpolate(pred_face_norm, scale_factor=(scaleF, scaleF), mode='bilinear', align_corners=False, antialias=True)
+        img_tensor = img_tensor * 2 - 1 # Change the range to [-1, 1]
+        pred_face_tex = pred_face_tex * 2 - 1
+
+        return img_tensor, pred_mask, pred_face_vertex, pred_face_tex, pred_face_norm, pred_lm
 
     def get_mask(self, coeffs):
         pred_mask, _ = self.model.forward2(coeffs)

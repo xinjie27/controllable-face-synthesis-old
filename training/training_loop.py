@@ -194,7 +194,7 @@ def training_loop(
         print('Setting up training phases...')
     loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, augment_pipe=augment_pipe, **loss_kwargs) # subclass of training.loss.Loss
     phases = []
-    for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
+    for name, module, opt_kwargs, reg_interval in [('D', D, D_opt_kwargs, D_reg_interval), ('G', G, G_opt_kwargs, G_reg_interval)]:
         if reg_interval is None:
             opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
             phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
@@ -225,8 +225,19 @@ def training_loop(
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_m = sample_m(labels.shape[0]).to(device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
-        images = torch.cat([G_ema(z=z, m=m, c=c, noise_mode='const').cpu() for z, m, c in zip(grid_z, grid_m, grid_c)]).numpy()
+
+        images = []
+        renders = []
+
+        for z, m, c in zip(grid_z, grid_m, grid_c):
+            img, RenderedFace = G_ema(z=z, m=m, c=c, noise_mode='const', aux_output=True)
+            images += [img.cpu()]
+            renders += [RenderedFace.cpu()]
+
+        images = torch.cat(images).numpy()
+        renders = torch.cat(renders).numpy()
         save_image_grid(images, os.path.join(run_dir, 'fakes_init.png'), drange=[-1,1], grid_size=grid_size)
+        save_image_grid(renders, os.path.join(run_dir, 'renders.png'), drange=[-1,1], grid_size=grid_size)
 
     # Initialize logs.
     if rank == 0:

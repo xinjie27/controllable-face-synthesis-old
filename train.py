@@ -175,7 +175,7 @@ def main(**kwargs):
     # Initialize config.
     opts = dnnlib.EasyDict(kwargs) # Command line arguments.
     c = dnnlib.EasyDict() # Main config dict.
-    c.G_kwargs = dnnlib.EasyDict(class_name=None, z_dim=512, m_dim=257, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
+    c.G_kwargs = dnnlib.EasyDict(class_name=None, z_dim=64, m_dim=257, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
     c.D_kwargs = dnnlib.EasyDict(class_name='training.networks_stylegan2.Discriminator', block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
     c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0,0.99], eps=1e-8)
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0,0.99], eps=1e-8)
@@ -196,7 +196,7 @@ def main(**kwargs):
     c.G_kwargs.channel_base = c.D_kwargs.channel_base = opts.cbase
     c.G_kwargs.channel_max = c.D_kwargs.channel_max = opts.cmax
 
-    c.G_kwargs.gbuffer_channels = 10 # Color 3, Texture 3, Norm 3, Depth 1
+    c.G_kwargs.gbuffer_channels = 12 # Color 3, Texture 3, Norm 3, Vertex 3
 
     c.G_kwargs.mapping_kwargs.num_layers = opts.map_depth
     c.D_kwargs.block_kwargs.freeze_layers = opts.freezed
@@ -231,6 +231,8 @@ def main(**kwargs):
     # c.loss_kwargs.pl_no_weight_grad = True # Speed up path length regularization by skipping gradient computation wrt. conv2d weights.
 
     #c.G_kwargs.use_noise = False
+    #c.loss_kwargs.blur_init_sigma = 10 # Blur the images seen by the discriminator.
+    #c.loss_kwargs.blur_fade_kimg = c.batch_size * 2000 / 32 # Fade out the blur during the first N kimg.
 
     # Augmentation.
     if opts.aug != 'noaug':
