@@ -16,7 +16,7 @@ def supress_stdout(func):
 
 class Sampler():
     def __init__(self,
-        file_path = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_mat_224/*"):
+        file_path = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/datasets/ffhq_coeffs_224_aligned/*"):
         self.mat_list = np.array(list(glob.glob(file_path)))
         self.n = len(self.mat_list)
     
@@ -26,7 +26,8 @@ class Sampler():
 
         # print(mat_paths)
         for i in range(batch_size):
-            coeff_tensor[i] = self.sample_m_single()
+            # coeff_tensor[i] = self.sample_m_single()
+            coeff_tensor[i] = self.sample_m_single_ffhq()
         coeff_tensor = torch.from_numpy(coeff_tensor).float()
         # print(coeff_tensor)
         # print(coeff_tensor.shape)
@@ -43,6 +44,19 @@ class Sampler():
             loadmat(self.mat_list[d_delta_idx[3]])["angle"],
             loadmat(self.mat_list[d_delta_idx[4]])["gamma"],
             loadmat(self.mat_list[d_delta_idx[5]])["trans"],
+        ]).squeeze()
+
+        return coeffs
+
+    def sample_m_single_ffhq(self):
+        idx = np.random.randint(self.n)
+        coeffs = np.hstack([
+            loadmat(self.mat_list[idx])["id"],
+            loadmat(self.mat_list[idx])["exp"],
+            loadmat(self.mat_list[idx])["tex"],
+            loadmat(self.mat_list[idx])["angle"],
+            loadmat(self.mat_list[idx])["gamma"],
+            loadmat(self.mat_list[idx])["trans"],
         ]).squeeze()
 
         return coeffs

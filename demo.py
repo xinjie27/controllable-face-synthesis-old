@@ -10,8 +10,8 @@ from torch_utils import misc
 from renderer import renderer128
 from Deep3DFaceRecon.util import util
 
-MODEL_PATH = "./training-runs/3dmm_loss_fail1/network-snapshot-002355.pkl"
-FILEPATH = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224/*"
+MODEL_PATH = "./training-runs/aligned/network-snapshot-007372.pkl"
+FILEPATH = "./datasets/ffhq_coeffs_224/*"
 
 
 device = torch.device('cuda', 0)
@@ -45,11 +45,11 @@ def generate():
 
     coeffs_list = list(glob.glob(FILEPATH))
     coeffs = torch.Tensor(np.load(coeffs_list[index])).to(device)
-    z = torch.randn(1, 512).to(device)
+    z = torch.randn(1, 64).to(device)
     data.z = z
     data.coeffs = coeffs
     c = None
-    image_npy = G(z, coeffs, c)[0].detach().cpu().numpy()
+    image_npy = G(z, coeffs, c, truncation_psi = truncation_psi)[0].detach().cpu().numpy()
     image_npy = image_npy.squeeze().transpose((1, 2, 0))
     image_npy = _scale_img(image_npy)
     image = ImageTk.PhotoImage(Image.fromarray(image_npy))
@@ -91,6 +91,9 @@ frame_d.grid(row=1, column=0)
 # Perturbation section
 scale_hi = 2
 scale_lo = -1
+
+# truncation factor
+truncation_psi = 0.5
 
 
 id_var = tk.DoubleVar()
@@ -158,7 +161,7 @@ def perturb():
     scale_factor = torch.Tensor(np.array([id_var.get()] * 80 + [exp_var.get()] * 64 + [tex_var.get()] * 80 + [angle_var.get()] * 3 + [gamma_var.get()] * 27 + [trans_var.get()] * 3)).to(device)
     c = None
     z = data.z * z_var.get()
-    img_new_npy = G(z, scale_factor * data.coeffs, c)[0].detach().cpu().numpy()
+    img_new_npy = G(z, scale_factor * data.coeffs, c, truncation_psi = truncation_psi)[0].detach().cpu().numpy()
     img_new_npy = img_new_npy.squeeze().transpose((1, 2, 0))
     img_new_npy = _scale_img(img_new_npy)
     image_new = ImageTk.PhotoImage(Image.fromarray(img_new_npy))
@@ -190,10 +193,10 @@ def reset():
 
 # Resample z
 def resample_z():
-    z = torch.randn(1, 512).to(device)
+    z = torch.randn(1, 64).to(device)
     data.z = z
     c = None
-    image_npy = G(z, data.coeffs, c).detach().cpu().numpy()
+    image_npy = G(z, data.coeffs, c, truncation_psi = truncation_psi)[0].detach().cpu().numpy()
     image_npy = image_npy.squeeze().transpose((1, 2, 0))
     image_npy = _scale_img(image_npy)
     image = ImageTk.PhotoImage(Image.fromarray(image_npy))
@@ -206,26 +209,26 @@ def resample_z():
     label_img_rdr.configure(image=image_rdr)
     label_img_rdr.image = image_rdr
 
-def smooth_z():
-    z1 = torch.randn(1, 512).to(device)
-    z2 = torch.randn(1, 512).to(device)
-    c = None
-    z1_image_npy = G(z1, data.coeffs, c).detach().cpu().numpy()
-    z1_image_npy = z1_image_npy.squeeze().transpose((1, 2, 0))
-    z1_image_npy = _scale_img(z1_image_npy)
-    util.save_image(z1_image_npy, 'test/z1.png')
-    z2_image_npy = G(z2, data.coeffs, c).detach().cpu().numpy()
-    z2_image_npy = z2_image_npy.squeeze().transpose((1, 2, 0))
-    z2_image_npy = _scale_img(z2_image_npy)
-    util.save_image(z2_image_npy, 'test/z2.png')
+# def smooth_z():
+#     z1 = torch.randn(1, 512).to(device)
+#     z2 = torch.randn(1, 512).to(device)
+#     c = None
+#     z1_image_npy = G(z1, data.coeffs, c).detach().cpu().numpy()
+#     z1_image_npy = z1_image_npy.squeeze().transpose((1, 2, 0))
+#     z1_image_npy = _scale_img(z1_image_npy)
+#     util.save_image(z1_image_npy, 'test/z1.png')
+#     z2_image_npy = G(z2, data.coeffs, c).detach().cpu().numpy()
+#     z2_image_npy = z2_image_npy.squeeze().transpose((1, 2, 0))
+#     z2_image_npy = _scale_img(z2_image_npy)
+#     util.save_image(z2_image_npy, 'test/z2.png')
 
-    n = 100
-    for i in range(n):
-        z = z1 + (z2 - z1) / n * (i+1)
-        z_image_npy = G(z, data.coeffs, c).detach().cpu().numpy()
-        z_image_npy = z_image_npy.squeeze().transpose((1, 2, 0))
-        z_image_npy = _scale_img(z_image_npy)
-        util.save_image(z_image_npy, f'test/{i+1}.png')
+#     n = 100
+#     for i in range(n):
+#         z = z1 + (z2 - z1) / n * (i+1)
+#         z_image_npy = G(z, data.coeffs, c).detach().cpu().numpy()
+#         z_image_npy = z_image_npy.squeeze().transpose((1, 2, 0))
+#         z_image_npy = _scale_img(z_image_npy)
+#         util.save_image(z_image_npy, f'test/{i+1}.png')
 
 
 # frame_r = tk.Frame(master=window)

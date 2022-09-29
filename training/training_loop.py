@@ -164,8 +164,9 @@ def training_loop(
 
     # Print network summary tables.
     if rank == 0:
+        m_dim = 257
         z = torch.empty([batch_gpu, G.z_dim], device=device)
-        m = torch.empty([batch_gpu, G.m_dim], device=device)
+        m = torch.empty([batch_gpu, m_dim], device=device)
         c = torch.empty([batch_gpu, G.c_dim], device=device)
         img = misc.print_module_summary(G, [z, m, c])
         misc.print_module_summary(D, [img, m, c])

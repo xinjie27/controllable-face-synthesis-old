@@ -11,6 +11,7 @@
 Matches the original implementation of configs E-F by Karras et al. at
 https://github.com/NVlabs/stylegan2/blob/master/training/networks_stylegan2.py"""
 
+import time
 import numpy as np
 import torch
 from torch_utils import misc
@@ -192,7 +193,6 @@ class Conv2dLayer(torch.nn.Module):
 class MappingNetwork(torch.nn.Module):
     def __init__(self,
         z_dim,                      # Input latent (Z) dimensionality, 0 = no latent.
-        m_dim,                      # socialvv
         c_dim,                      # Conditioning label (C) dimensionality, 0 = no label.
         w_dim,                      # Intermediate latent (W) dimensionality.
         num_ws,                     # Number of intermediate latents to output, None = do not broadcast.
@@ -205,7 +205,6 @@ class MappingNetwork(torch.nn.Module):
     ):
         super().__init__()
         self.z_dim = z_dim
-        self.m_dim = m_dim
         self.c_dim = c_dim
         self.w_dim = w_dim
         self.num_ws = num_ws
@@ -218,8 +217,8 @@ class MappingNetwork(torch.nn.Module):
             embed_features = 0
         if layer_features is None:
             layer_features = w_dim
-        #features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
-        features_list = [z_dim + m_dim] + [layer_features] * (num_layers - 1) + [w_dim]
+        features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
+        
         
 
         if c_dim > 0:
@@ -233,15 +232,10 @@ class MappingNetwork(torch.nn.Module):
         if num_ws is not None and w_avg_beta is not None:
             self.register_buffer('w_avg', torch.zeros([w_dim]))
 
-      #  self.calc_z_mean_from_m = FullyConnectedLayer(m_dim, z_dim, bias=False, activation='linear')
-      #  self.calc_z_std_from_m = FullyConnectedLayer(m_dim, z_dim, bias_init=1, activation='linear')
-
-    def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
-        m = m.to(torch.float32)
-       # z_mean = self.calc_z_mean_from_m(m)
-       # z_std = self.calc_z_mean_from_m(m)
-    #    z = z_mean + z_std * z.to(torch.float32)
-        z = torch.cat([m, z.to(torch.float32)], dim=1)
+    def forward(self, z, mean, std, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
+        
+        z = mean + std * z.to(torch.float32)
+        
 
 
 
@@ -284,7 +278,7 @@ class MappingNetwork(torch.nn.Module):
         return x
 
     def extra_repr(self):
-        return f'z_dim={self.z_dim:d}, m_dim={self.m_dim:d}, c_dim={self.c_dim:d}, w_dim={self.w_dim:d}, num_ws={self.num_ws:d}'
+        return f'z_dim={self.z_dim:d}, c_dim={self.c_dim:d}, w_dim={self.w_dim:d}, num_ws={self.num_ws:d}'
 
 #----------------------------------------------------------------------------
 
@@ -292,7 +286,6 @@ class MappingNetwork(torch.nn.Module):
 class SynthesisLayer(torch.nn.Module):
     def __init__(self,
         in_channels,                    # Number of input channels.
-        gbuffer_channels,               # socialvv
         out_channels,                   # Number of output channels.
         w_dim,                          # Intermediate latent (W) dimensionality.
         resolution,                     # Resolution of this layer.
@@ -306,7 +299,6 @@ class SynthesisLayer(torch.nn.Module):
     ):
         super().__init__()
         self.in_channels = in_channels
-        self.gbuffer_channels = gbuffer_channels
         self.out_channels = out_channels
         self.w_dim = w_dim
         self.resolution = resolution
@@ -320,13 +312,13 @@ class SynthesisLayer(torch.nn.Module):
 
         self.affine = FullyConnectedLayer(w_dim, in_channels, bias_init=1)
         memory_format = torch.channels_last if channels_last else torch.contiguous_format
-        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels + gbuffer_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
+        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
         if use_noise:
             self.register_buffer('noise_const', torch.randn([resolution, resolution]))
             self.noise_strength = torch.nn.Parameter(torch.zeros([]))
         self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
 
-    def forward(self, x, gbuffers, w, noise_mode='random', fused_modconv=True, gain=1):
+    def forward(self, x, w, noise_mode='random', fused_modconv=True, gain=1):
         assert noise_mode in ['random', 'const', 'none']
         in_resolution = self.resolution // self.up
         misc.assert_shape(x, [None, self.in_channels, in_resolution, in_resolution])
@@ -340,8 +332,8 @@ class SynthesisLayer(torch.nn.Module):
 
         flip_weight = (self.up == 1) # slightly faster
 
-        x = torch.cat([gbuffers, x], dim=1)
-        styles = torch.cat([torch.ones(x.shape[0], self.gbuffer_channels, device=x.device), styles], dim=1)
+        #x = torch.cat([gbuffers, x], dim=1)
+        #styles = torch.cat([torch.ones(x.shape[0], self.gbuffer_channels, device=x.device), styles], dim=1)
 
 
 
@@ -392,7 +384,6 @@ class ToRGBLayer(torch.nn.Module):
 class SynthesisBlock(torch.nn.Module):
     def __init__(self,
         in_channels,                            # Number of input channels, 0 = first block.
-        gbuffer_channels,                       # socialvv
         out_channels,                           # Number of output channels.
         w_dim,                                  # Intermediate latent (W) dimensionality.
         resolution,                             # Resolution of this block.
@@ -409,7 +400,6 @@ class SynthesisBlock(torch.nn.Module):
         assert architecture in ['orig', 'skip', 'resnet']
         super().__init__()
         self.in_channels = in_channels
-        self.gbuffer_channels = gbuffer_channels
         self.w_dim = w_dim
         self.resolution = resolution
         self.img_channels = img_channels
@@ -422,15 +412,13 @@ class SynthesisBlock(torch.nn.Module):
         self.num_conv = 0
         self.num_torgb = 0
 
-        if in_channels == 0:
-            self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution]))
 
         if in_channels != 0:
-            self.conv0 = SynthesisLayer(in_channels, gbuffer_channels, out_channels, w_dim=w_dim, resolution=resolution, up=2,
+            self.conv0 = SynthesisLayer(in_channels + in_channels // 4, out_channels, w_dim=w_dim, resolution=resolution, up=2,
                 resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
             self.num_conv += 1
 
-        self.conv1 = SynthesisLayer(out_channels, gbuffer_channels, out_channels, w_dim=w_dim, resolution=resolution,
+        self.conv1 = SynthesisLayer(out_channels, out_channels, w_dim=w_dim, resolution=resolution,
             conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
         self.num_conv += 1
 
@@ -443,7 +431,10 @@ class SynthesisBlock(torch.nn.Module):
             self.skip = Conv2dLayer(in_channels, out_channels, kernel_size=1, bias=False, up=2,
                 resample_filter=resample_filter, channels_last=self.channels_last)
 
-    def forward(self, x, gbuffers, img, ws, force_fp32=False, fused_modconv=None, update_emas=False, **layer_kwargs):
+        if in_channels != 0:
+            self.enc_skip = Conv2dLayer(in_channels, in_channels // 4, kernel_size=1, activation='lrelu', channels_last=self.channels_last)
+
+    def forward(self, x, img, input_skip, ws, force_fp32=False, fused_modconv=None, update_emas=False, **layer_kwargs):
         _ = update_emas # unused
         misc.assert_shape(ws, [None, self.num_conv + self.num_torgb, self.w_dim])
         w_iter = iter(ws.unbind(dim=1))
@@ -458,26 +449,23 @@ class SynthesisBlock(torch.nn.Module):
 
         # Input.
         if self.in_channels == 0:
-            x = self.const.to(dtype=dtype, memory_format=memory_format)
-            x = x.unsqueeze(0).repeat([ws.shape[0], 1, 1, 1])
+            x = x.to(dtype=dtype, memory_format=memory_format)
         else:
             misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])
             x = x.to(dtype=dtype, memory_format=memory_format)
-
-        gbuffers = gbuffers.to(dtype=dtype, memory_format=memory_format)
-        gbuffers_low = torch.nn.functional.interpolate(gbuffers, scale_factor=0.5, mode='bilinear', align_corners=False, recompute_scale_factor=True, antialias=True)
+            x = torch.cat([self.enc_skip(input_skip), x], dim=1)
 
         # Main layers.
         if self.in_channels == 0:
-            x = self.conv1(x, gbuffers, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
         elif self.architecture == 'resnet':
             y = self.skip(x, gain=np.sqrt(0.5))
-            x = self.conv0(x, gbuffers_low, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1(x, gbuffers, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
+            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
             x = y.add_(x)
         else:
-            x = self.conv0(x, gbuffers_low, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1(x, gbuffers, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
 
         # ToRGB.
         if img is not None:
@@ -494,128 +482,6 @@ class SynthesisBlock(torch.nn.Module):
 
     def extra_repr(self):
         return f'resolution={self.resolution:d}, architecture={self.architecture:s}'
-
-#----------------------------------------------------------------------------
-
-@persistence.persistent_class
-class SynthesisNetwork(torch.nn.Module):
-    def __init__(self,
-        w_dim,                      # Intermediate latent (W) dimensionality.
-        img_resolution,             # Output image resolution.
-        img_channels,               # Number of color channels.
-        gbuffer_channels,           # socialvv
-        channel_base    = 32768,    # Overall multiplier for the number of channels.
-        channel_max     = 512,      # Maximum number of channels in any layer.
-        num_fp16_res    = 4,        # Use FP16 for the N highest resolutions.
-        **block_kwargs,             # Arguments for SynthesisBlock.
-    ):
-        assert img_resolution >= 4 and img_resolution & (img_resolution - 1) == 0
-        super().__init__()
-        self.w_dim = w_dim
-        self.img_resolution = img_resolution
-        self.img_resolution_log2 = int(np.log2(img_resolution))
-        self.img_channels = img_channels
-        self.num_fp16_res = num_fp16_res
-        self.block_resolutions = [2 ** i for i in range(2, self.img_resolution_log2 + 1)]
-        channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions}
-        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
-
-        self.num_ws = 0
-        for res in self.block_resolutions:
-            in_channels = channels_dict[res // 2] if res > 4 else 0
-            out_channels = channels_dict[res]
-            use_fp16 = (res >= fp16_resolution)
-            is_last = (res == self.img_resolution)
-            block = SynthesisBlock(in_channels, gbuffer_channels, out_channels, w_dim=w_dim, resolution=res,
-                img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
-            self.num_ws += block.num_conv
-            if is_last:
-                self.num_ws += block.num_torgb
-            setattr(self, f'b{res}', block)
-
-    def forward(self, m, ws, alpha=1, **block_kwargs):
-        RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = renderer128.render(m)
-
-        Zeros = torch.ones_like(RenderedFace, device=RenderedFace.device)
-        RenderedFace = RenderedFace * RenderedMask + Zeros * (1 - RenderedMask)
-        RenderedFaceTex = RenderedFaceTex * RenderedMask + Zeros * (1 - RenderedMask)
-
-        # renderer128.visualize(RenderedDepth[0].repeat(1, 3, 1, 1), path='./depth.png')
-        # renderer128.visualize(RenderedFaceVertex[0], path='./vertex.png')
-        # renderer128.visualize(RenderedFace[0], path='./face.png')
-        # renderer128.visualize(RenderedFaceTex[0], path='./tex.png')
-        # renderer128.visualize(RenderedFaceNorm[0], path='./norm.png')
-
-        gbuffers = [torch.cat([RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm],dim=1)]
-        res = 128
-        while (res > 4):
-            res = res // 2
-            gbuffers += [torch.nn.functional.interpolate(gbuffers[-1], scale_factor=0.5, mode='bilinear', align_corners=False, recompute_scale_factor=True, antialias=True)]
-
-        gbuffers.reverse()
-
-
-        block_ws = []
-        with torch.autograd.profiler.record_function('split_ws'):
-            misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
-            ws = ws.to(torch.float32)
-            w_idx = 0
-            for res in self.block_resolutions:
-                block = getattr(self, f'b{res}')
-                block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
-                w_idx += block.num_conv
-
-        x = img = None
-        for res, cur_ws in zip(self.block_resolutions, block_ws):
-            block = getattr(self, f'b{res}')
-            x, img = block(x, gbuffers.pop(0), img, cur_ws, **block_kwargs)
-
-        BlendedOutput = img * alpha + RenderedFace * (1. - alpha)
-        BlackBackground = -torch.ones_like(img, device=img.device)
-        BlendedOutput = BlendedOutput * RenderedMask + BlackBackground * (1 - RenderedMask)
-
-        return img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks
-
-    def extra_repr(self):
-        return ' '.join([
-            f'w_dim={self.w_dim:d}, num_ws={self.num_ws:d},',
-            f'img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d},',
-            f'num_fp16_res={self.num_fp16_res:d}'])
-
-#----------------------------------------------------------------------------
-
-@persistence.persistent_class
-class Generator(torch.nn.Module):
-    def __init__(self,
-        z_dim,                      # Input latent (Z) dimensionality.
-        m_dim,                      # socialvv
-        c_dim,                      # Conditioning label (C) dimensionality.
-        w_dim,                      # Intermediate latent (W) dimensionality.
-        img_resolution,             # Output resolution.
-        img_channels,               # Number of output color channels.
-        gbuffer_channels,           # socialvv
-        mapping_kwargs      = {},   # Arguments for MappingNetwork.
-        **synthesis_kwargs,         # Arguments for SynthesisNetwork.
-    ):
-        super().__init__()
-        self.z_dim = z_dim
-        self.m_dim = m_dim
-        self.c_dim = c_dim
-        self.w_dim = w_dim
-        self.img_resolution = img_resolution
-        self.img_channels = img_channels
-        self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, gbuffer_channels=gbuffer_channels, **synthesis_kwargs)
-        self.num_ws = self.synthesis.num_ws
-        self.mapping = MappingNetwork(z_dim=z_dim, m_dim=m_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
-        
-    def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, alpha=1, aux_output=False, **synthesis_kwargs):
-        ws = self.mapping(z, m, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        img, BlendedOutput, RenderedFace = self.synthesis(m, ws, alpha, update_emas=update_emas, **synthesis_kwargs)[0:3]
-
-        if aux_output:
-            return img, RenderedFace
-        else:
-            return img
 
 #----------------------------------------------------------------------------
 
@@ -707,6 +573,229 @@ class DiscriminatorBlock(torch.nn.Module):
         return f'resolution={self.resolution:d}, architecture={self.architecture:s}'
 
 #----------------------------------------------------------------------------
+
+
+
+
+
+@persistence.persistent_class
+class Encoder(torch.nn.Module):
+    def __init__(self,
+        img_resolution,                 # Input resolution.
+        gbuffer_channels,               # Number of gbuffer channels.
+        channel_base        = 32768,    # Overall multiplier for the number of channels.
+        channel_max         = 512,      # Maximum number of channels in any layer.
+        num_fp16_res        = 4,        # Use FP16 for the N highest resolutions.
+        conv_clamp          = 256       # Clamp the output of convolution layers to +-X, None = disable clamping.
+    ):
+        super().__init__()
+
+        architecture = 'resnet'
+        self.img_resolution = img_resolution
+        self.img_resolution_log2 = int(np.log2(img_resolution))
+        self.gbuffer_channels = gbuffer_channels
+        self.block_resolutions = [2 ** i for i in range(self.img_resolution_log2, 2, -1)]
+        channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions + [4]}
+        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
+
+        common_kwargs = dict(img_channels=gbuffer_channels, architecture=architecture, conv_clamp=conv_clamp)
+        cur_layer_idx = 0
+        for res in self.block_resolutions:
+            in_channels = channels_dict[res] if res < img_resolution else 0
+            tmp_channels = channels_dict[res]
+            out_channels = channels_dict[res // 2]
+            use_fp16 = (res >= fp16_resolution)
+            block = DiscriminatorBlock(in_channels, tmp_channels, out_channels, resolution=res,
+                first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **common_kwargs)
+            setattr(self, f'b{res}', block)
+            cur_layer_idx += block.num_layers
+
+        self.epilog = Conv2dLayer(channels_dict[4], channels_dict[4], kernel_size=3, activation='linear', bias=False, conv_clamp=conv_clamp)
+
+
+        self.fc = FullyConnectedLayer(channels_dict[4] * 16, 512, activation='lrelu')
+        self.mean_layer = FullyConnectedLayer(512, 512, activation='linear', bias=False)
+        self.std_layer = FullyConnectedLayer(512, 512, activation='linear', bias_init=1)
+
+
+
+        #self.epilog2 = Conv2dLayer(channels_dict[4], channels_dict[4], kernel_size=3, activation='lrelu', conv_clamp=conv_clamp)
+
+    def forward(self, img):
+
+        feats = []
+
+        x = None
+        for res in self.block_resolutions:
+            block = getattr(self, f'b{res}')
+            x, img = block(x, img)
+            feats += [x]
+
+        feats += [self.epilog(x)]
+        feats.reverse()
+
+        latent = self.fc(x.flatten(1))
+        mean = self.mean_layer(latent)
+        std = self.std_layer(latent)
+
+        return feats, mean, std
+
+
+
+
+
+
+#----------------------------------------------------------------------------
+
+
+
+@persistence.persistent_class
+class SynthesisNetwork(torch.nn.Module):
+    def __init__(self,
+        w_dim,                      # Intermediate latent (W) dimensionality.
+        img_resolution,             # Output image resolution.
+        img_channels,               # Number of color channels.
+        channel_base    = 32768,    # Overall multiplier for the number of channels.
+        channel_max     = 512,      # Maximum number of channels in any layer.
+        num_fp16_res    = 4,        # Use FP16 for the N highest resolutions.
+        **block_kwargs,             # Arguments for SynthesisBlock.
+    ):
+        assert img_resolution >= 4 and img_resolution & (img_resolution - 1) == 0
+        super().__init__()
+        self.w_dim = w_dim
+        self.img_resolution = img_resolution
+        self.img_resolution_log2 = int(np.log2(img_resolution))
+        self.img_channels = img_channels
+        self.num_fp16_res = num_fp16_res
+        self.block_resolutions = [2 ** i for i in range(2, self.img_resolution_log2 + 1)]
+        channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions}
+        fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
+
+        self.num_ws = 0
+        for res in self.block_resolutions:
+            in_channels = channels_dict[res // 2] if res > 4 else 0
+            out_channels = channels_dict[res]
+            use_fp16 = (res >= fp16_resolution)
+            is_last = (res == self.img_resolution)
+            block = SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
+                img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
+            self.num_ws += block.num_conv
+            if is_last:
+                self.num_ws += block.num_torgb
+            setattr(self, f'b{res}', block)
+
+        
+
+    def forward(self, y, ws, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks, alpha=1, **block_kwargs):
+
+        x = y.pop(0)
+
+        block_ws = []
+        with torch.autograd.profiler.record_function('split_ws'):
+            misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
+            ws = ws.to(torch.float32)
+            w_idx = 0
+            for res in self.block_resolutions:
+                block = getattr(self, f'b{res}')
+                block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
+                w_idx += block.num_conv
+
+        img = None
+        for res, cur_ws in zip(self.block_resolutions, block_ws):
+            block = getattr(self, f'b{res}')
+            enc_skip = None if block.in_channels == 0 else y.pop(0)
+            x, img = block(x, img, enc_skip, cur_ws, **block_kwargs)
+
+        BlendedOutput = img * alpha + RenderedFace * (1. - alpha)
+        BlackBackground = -torch.ones_like(img, device=img.device)
+        BlendedOutput = BlendedOutput * RenderedMask + BlackBackground * (1 - RenderedMask)
+
+        return img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks
+
+    def extra_repr(self):
+        return ' '.join([
+            f'w_dim={self.w_dim:d}, num_ws={self.num_ws:d},',
+            f'img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d},',
+            f'num_fp16_res={self.num_fp16_res:d}'])
+
+#----------------------------------------------------------------------------
+
+
+
+@persistence.persistent_class
+class Generator(torch.nn.Module):
+    def __init__(self,
+        z_dim,                      # Input latent (Z) dimensionality.
+        c_dim,                      # Conditioning label (C) dimensionality.
+        w_dim,                      # Intermediate latent (W) dimensionality.
+        img_resolution,             # Output resolution.
+        img_channels,               # Number of output color channels.
+        gbuffer_channels,           # socialvv
+        mapping_kwargs      = {},   # Arguments for MappingNetwork.
+        **synthesis_kwargs,         # Arguments for SynthesisNetwork.
+    ):
+        super().__init__()
+        self.z_dim = z_dim
+        self.c_dim = c_dim
+        self.w_dim = w_dim
+        self.img_resolution = img_resolution
+        self.img_channels = img_channels
+        self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
+        self.num_ws = self.synthesis.num_ws
+        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
+
+        self.enc = Encoder(img_resolution, gbuffer_channels, synthesis_kwargs['channel_base'], synthesis_kwargs['channel_max'], synthesis_kwargs['num_fp16_res'])
+
+    def run_enc(self, m):
+        RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = renderer128.render(m)
+
+        Zeros = torch.ones_like(RenderedFace, device=RenderedFace.device)
+        RenderedFace = RenderedFace * RenderedMask + Zeros * (1 - RenderedMask)
+        RenderedFaceTex = RenderedFaceTex * RenderedMask + Zeros * (1 - RenderedMask)
+
+        gbuffers = torch.cat([RenderedFace, RenderedFaceTex, RenderedFaceNorm],dim=1)
+        x, mean, std = self.enc(gbuffers)
+
+        # timestamp = int(time.time())
+        # renderer128.visualize(RenderedFace[0], path = f'test/gbuffers/{timestamp}_face.png')
+        # renderer128.visualize(RenderedFaceVertex[0], path = f'test/gbuffers/{timestamp}_vertex.png')
+        # renderer128.visualize(RenderedFaceTex[0], path = f'test/gbuffers/{timestamp}_tex.png')
+        # renderer128.visualize(RenderedFaceNorm[0], path = f'test/gbuffers/{timestamp}_norm.png')
+
+        return x, mean, std, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks
+
+        
+    def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, alpha=1, aux_output=False, **synthesis_kwargs):
+
+        x, mean, std, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.run_enc(m)
+
+        ws = self.mapping(z, mean, std, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+
+        img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.synthesis(
+            x, 
+            ws, 
+            RenderedFace, 
+            RenderedMask, 
+            RenderedFaceVertex, 
+            RenderedFaceTex, 
+            RenderedFaceNorm, 
+            RenderedLandmarks, 
+            alpha, 
+            update_emas=update_emas, **synthesis_kwargs)
+
+        if aux_output:
+            return img, RenderedFace
+        else:
+            return img
+
+
+
+
+
+
+
+#----------------------------------------------------------------------------
+
 
 @persistence.persistent_class
 class MinibatchStdLayer(torch.nn.Module):

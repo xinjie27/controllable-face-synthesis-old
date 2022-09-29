@@ -53,13 +53,32 @@ class StyleGAN2Loss:
         self.mean_gbuffer_loss  = torch.zeros([], device=device) 
 
     def run_G(self, z, m, c, alpha, update_emas=False):
-        ws = self.G.mapping(z, m, c, update_emas=update_emas)
+        x, mean, std, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.G.run_enc(m)
+
+
+        ws = self.G.mapping(z, mean, std, c, update_emas=update_emas)
         if self.style_mixing_prob > 0:
             with torch.autograd.profiler.record_function('style_mixing'):
                 cutoff = torch.empty([], dtype=torch.int64, device=ws.device).random_(1, ws.shape[1])
                 cutoff = torch.where(torch.rand([], device=ws.device) < self.style_mixing_prob, cutoff, torch.full_like(cutoff, ws.shape[1]))
                 ws[:, cutoff:] = self.G.mapping(torch.randn_like(z), m, c, update_emas=False)[:, cutoff:]
-        img, img_3dmm, face, vertex, tex, norm, landmarks = self.G.synthesis(m, ws, alpha, update_emas=update_emas)
+
+        
+
+
+        img, img_3dmm, face, vertex, tex, norm, landmarks = self.G.synthesis(
+            x, 
+            ws, 
+            RenderedFace, 
+            RenderedMask, 
+            RenderedFaceVertex, 
+            RenderedFaceTex, 
+            RenderedFaceNorm, 
+            RenderedLandmarks, 
+            alpha, 
+            update_emas=update_emas)
+
+
         return img, img_3dmm, ws, face, vertex, tex, norm, landmarks
 
     def run_D(self, img, c, blur_sigma=0, update_emas=False):
@@ -155,7 +174,7 @@ class StyleGAN2Loss:
         if phase in ['Gmain', 'Gboth']:
             with torch.autograd.profiler.record_function('Gmain_forward'):
                 loss_3dmm_fade_kimg = 64 * 1000 / 32
-                loss_3dmm_weight = min(cur_nimg / (loss_3dmm_fade_kimg * 1e3), 1) * 20
+                loss_3dmm_weight = 20#min(cur_nimg / (loss_3dmm_fade_kimg * 1e3), 1) * 20
 
                 alpha = min(cur_nimg / (loss_3dmm_fade_kimg * 1e3), 1)
                 training_stats.report('Loss/alpha', alpha)
@@ -173,19 +192,23 @@ class StyleGAN2Loss:
                     
                 GBuffer_face_loss = torch.mean(torch.square(GBuffer_face - GBuffer_face_recon), dim=(1,2,3))
                 # GBuffer_vertex_loss = torch.mean(torch.square(GBuffer_vertex - GBuffer_vertex_recon), dim=(1,2,3))
-                # GBuffer_tex_loss = torch.mean(torch.square(GBuffer_tex - GBuffer_tex_recon), dim=(1,2,3))
-                # GBuffer_norm_loss = torch.mean(torch.square(GBuffer_norm - GBuffer_norm_recon), dim=(1,2,3))
+                GBuffer_tex_loss = torch.mean(torch.square(GBuffer_tex - GBuffer_tex_recon), dim=(1,2,3))
+                GBuffer_norm_loss = torch.mean(torch.square(GBuffer_norm - GBuffer_norm_recon), dim=(1,2,3))
 
                 GBuffer_face_loss_detached = GBuffer_face_loss.clone().detach()
                 for i in range(GBuffer_face_recon.shape[0]):
                     if GBuffer_face_loss[i] > 5 * self.mean_gbuffer_loss:
                         if not os.path.exists(f'./test/recon/{cur_nimg}'):
                             os.makedirs(f'./test/recon/{cur_nimg}')
-                        RDR.visualize(GBuffer_face[i], f'./test/recon/{cur_nimg}/{i}_m.png')
+                        RDR.visualize(GBuffer_face[i], f'./test/recon/{cur_nimg}/{i}_face.png')
+                        RDR.visualize(GBuffer_face_recon[i], f'./test/recon/{cur_nimg}/{i}_face_recon.png')
+                        RDR.visualize(GBuffer_tex[i], f'./test/recon/{cur_nimg}/{i}_tex.png')
+                        RDR.visualize(GBuffer_tex_recon[i], f'./test/recon/{cur_nimg}/{i}_tex_recon.png')
+                        RDR.visualize(GBuffer_norm[i], f'./test/recon/{cur_nimg}/{i}_norm.png')
+                        RDR.visualize(GBuffer_norm_recon[i], f'./test/recon/{cur_nimg}/{i}_norm_recon.png')
                         RDR.visualize(gen_img[i], f'./test/recon/{cur_nimg}/{i}_generated.png')
                         RDR.visualize(gen_img_3dmm[i], f'./test/recon/{cur_nimg}/{i}_generated_blend.png')
-                        RDR.visualize(GBuffer_face_recon[i], f'./test/recon/{cur_nimg}/{i}_recon.png')
-                        GBuffer_face_loss[i] *= 0
+                       # GBuffer_face_loss[i] *= 0
                 # print(torch.eq(GBuffer_face_loss_detached, GBuffer_face_loss))
                 mean_gbuffer_loss = self.mean_gbuffer_loss.lerp(GBuffer_face_loss_detached.mean(), 0.01)
                 self.mean_gbuffer_loss.copy_(mean_gbuffer_loss.detach()) 
@@ -193,10 +216,12 @@ class StyleGAN2Loss:
 
 
 
-                loss_3dmm = loss_3dmm_weight * GBuffer_face_loss # + GBuffer_vertex_loss + GBuffer_tex_loss + GBuffer_norm_loss
+                loss_3dmm = loss_3dmm_weight * (GBuffer_face_loss + GBuffer_tex_loss + GBuffer_norm_loss)
 
                 #print(f"face loss: {GBuffer_face_loss}, vertex loss: {GBuffer_vertex_loss}, tex loss: {GBuffer_tex_loss}, norm_loss: {GBuffer_norm_loss}")
                 training_stats.report('Loss/face', GBuffer_face_loss)
+                training_stats.report('Loss/tex', GBuffer_tex_loss)
+                training_stats.report('Loss/norm', GBuffer_norm_loss)
                 training_stats.report('Loss/3dmm', loss_3dmm)
                 training_stats.report('Loss/3dmm_weight', loss_3dmm_weight)
                 # print("face loss:", GBuffer_face_loss.mean(), GBuffer_face_loss.shape)

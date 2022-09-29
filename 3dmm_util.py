@@ -120,7 +120,7 @@ def preprocess(img_dir):
     """
     detector = MTCNN()
 
-    img_list = glob.glob(f'{img_dir}/*.png')
+    img_list = glob.glob(f'{img_dir}/*/*.png')
     # print(img_list)
 
     for img_file in img_list:
@@ -139,7 +139,6 @@ def preprocess(img_dir):
         # if os.path.isdir(img_path): continue
         
         img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
-        print(img.shape)
         try:
             facial_landmarks = detector.detect_faces(img)[0]["keypoints"]
         except IndexError:
@@ -165,7 +164,7 @@ def call_model(config, output_dir, img_dir):
         os.makedirs(output_dir)
     # else: return
 
-    cmd = f"python ./test.py --name={MODEL_NAME}  --epoch={NUM_EPOCHS} --img_folder={img_dir}"
+    cmd = f"python Deep3DFaceRecon/test.py --name={MODEL_NAME}  --epoch={NUM_EPOCHS} --img_folder={img_dir}"
     os.system(cmd)
 
 ### END ###
@@ -347,22 +346,24 @@ if __name__ == "__main__":
     # print("=====preprocessing=====")
     # REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224'
     # REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/test'
+    REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/datasets/ffhq-224x224_aligned'
     # preprocess(REAL_IMG_DIR)
 
     # Step 2: call Deep3dRecon model
-    # print("Calling model...")
-    # coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
-    # call_model(config, coeffs_dir, REAL_IMG_DIR)
+    print("Calling model...")
+    coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/datasets/ffhq_coeffs_224_aligned'
+    call_model(config, coeffs_dir, REAL_IMG_DIR)
 
-    # step 3: replace background with 0 in ffhq
+    # Step 3: replace background with 0 in ffhq
     # img_path = get_data_path(REAL_IMG_DIR)
     # output_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224_masked'
     # mask_background(img_path, coeffs_dir)
 
-    img_paths = get_data_path('/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224')
-    coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
+    # Step X: Align dataset
+    # img_paths = get_data_path('/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224')
+    # coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
     # test_align(img_paths, coeffs_dir)
-    align(img_paths)
+    # align(img_paths)
 
     # analyze data
     # coeff_list = []
