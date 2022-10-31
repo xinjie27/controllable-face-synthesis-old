@@ -203,6 +203,10 @@ class MappingNetwork(torch.nn.Module):
         lr_multiplier   = 0.01,     # Learning rate multiplier for the mapping layers.
         w_avg_beta      = 0.998,    # Decay for tracking the moving average of W during training, None = do not track.
     ):
+
+        c_dim = 0
+
+
         super().__init__()
         self.z_dim = z_dim
         self.c_dim = c_dim
@@ -217,9 +221,7 @@ class MappingNetwork(torch.nn.Module):
             embed_features = 0
         if layer_features is None:
             layer_features = w_dim
-        features_list = [z_dim + embed_features] + [layer_features] * (num_layers - 1) + [w_dim]
-        
-        
+        features_list = [z_dim] + [layer_features] * (num_layers - 1) + [w_dim]
 
         if c_dim > 0:
             self.embed = FullyConnectedLayer(c_dim, embed_features)
@@ -232,25 +234,11 @@ class MappingNetwork(torch.nn.Module):
         if num_ws is not None and w_avg_beta is not None:
             self.register_buffer('w_avg', torch.zeros([w_dim]))
 
-    def forward(self, z, mean, std, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
-        
-        z = mean + std * z.to(torch.float32)
-        
-
-
-
-
+    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         # Embed, normalize, and concat inputs.
-        x = None
-        with torch.autograd.profiler.record_function('input'):
-            if self.z_dim > 0:
-              #  misc.assert_shape(z, [None, self.z_dim])
-                x = z
-                # x = normalize_2nd_moment(z)
-            if self.c_dim > 0:
-                misc.assert_shape(c, [None, self.c_dim])
-                y = normalize_2nd_moment(self.embed(c.to(torch.float32)))
-                x = torch.cat([x, y], dim=1) if x is not None else y
+        # x = torch.cat([c, z.to(torch.float32)], dim=1)
+        c = None
+        x = normalize_2nd_moment(z.to(torch.float32))
 
         # Main layers.
         for idx in range(self.num_layers):
@@ -286,6 +274,7 @@ class MappingNetwork(torch.nn.Module):
 class SynthesisLayer(torch.nn.Module):
     def __init__(self,
         in_channels,                    # Number of input channels.
+        inject_channels,
         out_channels,                   # Number of output channels.
         w_dim,                          # Intermediate latent (W) dimensionality.
         resolution,                     # Resolution of this layer.
@@ -299,6 +288,7 @@ class SynthesisLayer(torch.nn.Module):
     ):
         super().__init__()
         self.in_channels = in_channels
+        self.inject_channels = inject_channels
         self.out_channels = out_channels
         self.w_dim = w_dim
         self.resolution = resolution
@@ -312,13 +302,13 @@ class SynthesisLayer(torch.nn.Module):
 
         self.affine = FullyConnectedLayer(w_dim, in_channels, bias_init=1)
         memory_format = torch.channels_last if channels_last else torch.contiguous_format
-        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
+        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels + inject_channels, kernel_size, kernel_size]).to(memory_format=memory_format))
         if use_noise:
             self.register_buffer('noise_const', torch.randn([resolution, resolution]))
             self.noise_strength = torch.nn.Parameter(torch.zeros([]))
         self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
 
-    def forward(self, x, w, noise_mode='random', fused_modconv=True, gain=1):
+    def forward(self, x, injection, w, noise_mode='random', fused_modconv=True, gain=1):
         assert noise_mode in ['random', 'const', 'none']
         in_resolution = self.resolution // self.up
         misc.assert_shape(x, [None, self.in_channels, in_resolution, in_resolution])
@@ -332,10 +322,10 @@ class SynthesisLayer(torch.nn.Module):
 
         flip_weight = (self.up == 1) # slightly faster
 
-        #x = torch.cat([gbuffers, x], dim=1)
-        #styles = torch.cat([torch.ones(x.shape[0], self.gbuffer_channels, device=x.device), styles], dim=1)
 
-
+        if self.inject_channels > 0:
+            x = torch.cat([injection, x], dim=1)
+            styles = torch.cat([torch.ones(x.shape[0], self.inject_channels, device=x.device), styles], dim=1)
 
 
         x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=noise, up=self.up,
@@ -412,14 +402,22 @@ class SynthesisBlock(torch.nn.Module):
         self.num_conv = 0
         self.num_torgb = 0
 
+        if in_channels == 0:
+            self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution]))
+
 
         if in_channels != 0:
-            self.conv0 = SynthesisLayer(in_channels + in_channels // 4, out_channels, w_dim=w_dim, resolution=resolution, up=2,
+            self.conv0 = SynthesisLayer(in_channels, in_channels // 4, out_channels, w_dim=w_dim, resolution=resolution, up=2,
                 resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
             self.num_conv += 1
 
-        self.conv1 = SynthesisLayer(out_channels, out_channels, w_dim=w_dim, resolution=resolution,
+
+
+        inject_chan = 0 if in_channels != 0 else out_channels // 4
+        self.conv1 = SynthesisLayer(out_channels, inject_chan, out_channels, w_dim=w_dim, resolution=resolution,
             conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
+
+
         self.num_conv += 1
 
         if is_last or architecture == 'skip':
@@ -449,23 +447,24 @@ class SynthesisBlock(torch.nn.Module):
 
         # Input.
         if self.in_channels == 0:
-            x = x.to(dtype=dtype, memory_format=memory_format)
+            const_skip = x.to(dtype=dtype, memory_format=memory_format)
+            x = self.const.to(dtype=dtype, memory_format=memory_format)
+            x = x.unsqueeze(0).repeat([ws.shape[0], 1, 1, 1])
         else:
             misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])
             x = x.to(dtype=dtype, memory_format=memory_format)
-            x = torch.cat([self.enc_skip(input_skip), x], dim=1)
 
         # Main layers.
         if self.in_channels == 0:
-            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, const_skip, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
         elif self.architecture == 'resnet':
             y = self.skip(x, gain=np.sqrt(0.5))
-            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
+            x = self.conv0(x, self.enc_skip(input_skip), next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, None, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
             x = y.add_(x)
         else:
-            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv0(x, self.enc_skip(input_skip), next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, None, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
 
         # ToRGB.
         if img is not None:
@@ -610,12 +609,12 @@ class Encoder(torch.nn.Module):
             setattr(self, f'b{res}', block)
             cur_layer_idx += block.num_layers
 
-        self.epilog = Conv2dLayer(channels_dict[4], channels_dict[4], kernel_size=3, activation='linear', bias=False, conv_clamp=conv_clamp)
+        self.epilog = Conv2dLayer(channels_dict[4], channels_dict[4] // 4, kernel_size=3, activation='linear', bias=False, conv_clamp=conv_clamp)
 
 
-        self.fc = FullyConnectedLayer(channels_dict[4] * 16, 512, activation='lrelu')
-        self.mean_layer = FullyConnectedLayer(512, 512, activation='linear', bias=False)
-        self.std_layer = FullyConnectedLayer(512, 512, activation='linear', bias_init=1)
+       # self.fc = FullyConnectedLayer(channels_dict[4] * 16, 512, activation='lrelu')
+     #   self.mean_layer = FullyConnectedLayer(512, 512, activation='linear', bias=False)
+        # self.std_layer = FullyConnectedLayer(512, 512, activation='linear', bias_init=1)
 
 
 
@@ -634,11 +633,11 @@ class Encoder(torch.nn.Module):
         feats += [self.epilog(x)]
         feats.reverse()
 
-        latent = self.fc(x.flatten(1))
-        mean = self.mean_layer(latent)
-        std = self.std_layer(latent)
+        #latent = self.fc(x.flatten(1))
+        #mean = self.mean_layer(latent)
+        # std = self.std_layer(latent)
 
-        return feats, mean, std
+        return feats, None
 
 
 
@@ -754,7 +753,7 @@ class Generator(torch.nn.Module):
         RenderedFaceTex = RenderedFaceTex * RenderedMask + Zeros * (1 - RenderedMask)
 
         gbuffers = torch.cat([RenderedFace, RenderedFaceTex, RenderedFaceNorm],dim=1)
-        x, mean, std = self.enc(gbuffers)
+        x, mean = self.enc(gbuffers)
 
         # timestamp = int(time.time())
         # renderer128.visualize(RenderedFace[0], path = f'test/gbuffers/{timestamp}_face.png')
@@ -762,14 +761,15 @@ class Generator(torch.nn.Module):
         # renderer128.visualize(RenderedFaceTex[0], path = f'test/gbuffers/{timestamp}_tex.png')
         # renderer128.visualize(RenderedFaceNorm[0], path = f'test/gbuffers/{timestamp}_norm.png')
 
-        return x, mean, std, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks
+        return x, mean, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks
 
         
-    def forward(self, z, m, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, alpha=1, aux_output=False, **synthesis_kwargs):
+    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, alpha=1, aux_output=False, **synthesis_kwargs):
 
-        x, mean, std, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.run_enc(m)
+        x, mean, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.run_enc(c)
+        c = None
 
-        ws = self.mapping(z, mean, std, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        ws = self.mapping(z, mean, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
 
         img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.synthesis(
             x, 
@@ -903,6 +903,9 @@ class Discriminator(torch.nn.Module):
         mapping_kwargs      = {},       # Arguments for MappingNetwork.
         epilogue_kwargs     = {},       # Arguments for DiscriminatorEpilogue.
     ):
+        
+        c_dim = 0
+
         super().__init__()
         self.c_dim = c_dim
         self.img_resolution = img_resolution

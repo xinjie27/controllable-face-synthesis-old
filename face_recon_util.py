@@ -158,7 +158,7 @@ def preprocess(img_dir):
 
 ### RUN DEEP3D_FACERECON MODEL ###
 
-def call_model(config, output_dir, img_dir):
+def call_model(output_dir, img_dir):
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -352,7 +352,7 @@ if __name__ == "__main__":
     # Step 2: call Deep3dRecon model
     print("Calling model...")
     coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/datasets/ffhq_coeffs_224_aligned'
-    call_model(config, coeffs_dir, REAL_IMG_DIR)
+    call_model(coeffs_dir, REAL_IMG_DIR)
 
     # Step 3: replace background with 0 in ffhq
     # img_path = get_data_path(REAL_IMG_DIR)

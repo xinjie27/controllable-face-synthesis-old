@@ -25,4 +25,8 @@ kornia
 dominate
 trimesh
 MTCNN
+Ninja
+
+# Need to downgrade
+# protobuf==3.9.2
 

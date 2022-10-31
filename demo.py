@@ -1,17 +1,20 @@
+from json import load
+from random import randint
 import torch
 import glob
 from PIL import Image, ImageTk
 import numpy as np
 import tkinter as tk
 import pickle
+from scipy.io import loadmat
 
 import dnnlib
 from torch_utils import misc
 from renderer import renderer128
 from Deep3DFaceRecon.util import util
 
-MODEL_PATH = "./training-runs/aligned/network-snapshot-007372.pkl"
-FILEPATH = "./datasets/ffhq_coeffs_224/*"
+MODEL_PATH = "./training-runs/00000-ffhq-128x128-aligned-69885-gpus1-batch64-gamma1/network-snapshot-002816.pkl"
+FILEPATH = "./datasets/ffhq_coeffs_224_aligned/*"
 
 
 device = torch.device('cuda', 0)
@@ -19,7 +22,6 @@ device = torch.device('cuda', 0)
 # Load the generator
 with open(MODEL_PATH, "rb") as f:
     G = pickle.load(f)["G_ema"].to(device)
-
 
 # Structure to store z and coefficients
 class Data():
@@ -44,12 +46,20 @@ def generate():
         print("Please enter a valid integer.")
 
     coeffs_list = list(glob.glob(FILEPATH))
-    coeffs = torch.Tensor(np.load(coeffs_list[index])).to(device)
+    coeffs = np.hstack([
+            loadmat(coeffs_list[index])["id"],
+            loadmat(coeffs_list[index])["exp"],
+            loadmat(coeffs_list[index])["tex"],
+            loadmat(coeffs_list[index])["angle"],
+            loadmat(coeffs_list[index])["gamma"],
+            loadmat(coeffs_list[index])["trans"],
+            ])
+    coeffs = torch.Tensor(coeffs).to(device)
     z = torch.randn(1, 64).to(device)
     data.z = z
     data.coeffs = coeffs
-    c = None
-    image_npy = G(z, coeffs, c, truncation_psi = truncation_psi)[0].detach().cpu().numpy()
+    # c = None
+    image_npy = G(z, coeffs, noise_mode = "const", truncation_psi = truncation_psi)[0].detach().cpu().numpy()
     image_npy = image_npy.squeeze().transpose((1, 2, 0))
     image_npy = _scale_img(image_npy)
     image = ImageTk.PhotoImage(Image.fromarray(image_npy))
@@ -93,7 +103,7 @@ scale_hi = 2
 scale_lo = -1
 
 # truncation factor
-truncation_psi = 0.5
+truncation_psi = 1
 
 
 id_var = tk.DoubleVar()
@@ -159,9 +169,9 @@ frame_rdr.grid(row=1, column=2)
 
 def perturb():
     scale_factor = torch.Tensor(np.array([id_var.get()] * 80 + [exp_var.get()] * 64 + [tex_var.get()] * 80 + [angle_var.get()] * 3 + [gamma_var.get()] * 27 + [trans_var.get()] * 3)).to(device)
-    c = None
     z = data.z * z_var.get()
-    img_new_npy = G(z, scale_factor * data.coeffs, c, truncation_psi = truncation_psi)[0].detach().cpu().numpy()
+    # c = None
+    img_new_npy = G(z, scale_factor * data.coeffs, noise_mode = "const", truncation_psi = truncation_psi)[0].detach().cpu().numpy()
     img_new_npy = img_new_npy.squeeze().transpose((1, 2, 0))
     img_new_npy = _scale_img(img_new_npy)
     image_new = ImageTk.PhotoImage(Image.fromarray(img_new_npy))
@@ -188,15 +198,46 @@ def reset():
     gamma_slider.set(1)
     trans_slider.set(1)
     z_slider.set(1)
-    generate()
-    perturb()
+    z = data.z
+    coeffs = data.coeffs
+    image_npy = G(z, coeffs, noise_mode = "const", truncation_psi = truncation_psi)[0].detach().cpu().numpy()
+    image_npy = image_npy.squeeze().transpose((1, 2, 0))
+    image_npy = _scale_img(image_npy)
+    image = ImageTk.PhotoImage(Image.fromarray(image_npy))
+    label_img.configure(image=image)
+    label_img.image = image
 
 # Resample z
 def resample_z():
     z = torch.randn(1, 64).to(device)
-    data.z = z
     c = None
-    image_npy = G(z, data.coeffs, c, truncation_psi = truncation_psi)[0].detach().cpu().numpy()
+    image_npy = G(z, data.coeffs, noise_mode = "const", truncation_psi = truncation_psi)[0].detach().cpu().numpy()
+    image_npy = image_npy.squeeze().transpose((1, 2, 0))
+    image_npy = _scale_img(image_npy)
+    image = ImageTk.PhotoImage(Image.fromarray(image_npy))
+    label_img.configure(image=image)
+    label_img.image = image
+    img_rdr_npy = renderer128.render(data.coeffs)[0]
+    img_rdr_npy = img_rdr_npy.cpu().numpy().squeeze().transpose((1, 2, 0))
+    img_rdr_npy = _scale_img(img_rdr_npy)
+    image_rdr = ImageTk.PhotoImage(Image.fromarray(img_rdr_npy))
+    label_img_rdr.configure(image=image_rdr)
+    label_img_rdr.image = image_rdr
+
+def resample_m():
+    coeffs_list = list(glob.glob(FILEPATH))
+    index = randint(0, len(coeffs_list))
+    coeffs = np.hstack([
+            loadmat(coeffs_list[index])["id"],
+            loadmat(coeffs_list[index])["exp"],
+            loadmat(coeffs_list[index])["tex"],
+            loadmat(coeffs_list[index])["angle"],
+            loadmat(coeffs_list[index])["gamma"],
+            loadmat(coeffs_list[index])["trans"],
+            ])
+    coeffs = torch.Tensor(coeffs).to(device)
+    z = data.z
+    image_npy = G(z, coeffs, noise_mode = "const", truncation_psi = truncation_psi)[0].detach().cpu().numpy()
     image_npy = image_npy.squeeze().transpose((1, 2, 0))
     image_npy = _scale_img(image_npy)
     image = ImageTk.PhotoImage(Image.fromarray(image_npy))
@@ -238,8 +279,8 @@ button_r.grid(row=9, column=0, pady=10)
 button_z = tk.Button(master=window, text="Resample z", command=resample_z)
 button_z.grid(row=9, column=1, pady=10)
 
-# button_z = tk.Button(master=window, text="Smooth z", command=smooth_z)
-# button_z.grid(row=9, column=2, pady=10)
+button_m = tk.Button(master=window, text="Resample m", command=resample_m)
+button_m.grid(row=9, column=2, pady=10)
 
 
 # Start the demo

@@ -230,6 +230,17 @@ class ImageFolderDataset(Dataset):
         if labels is None:
             return None
         labels = dict(labels)
+
+        # socialvv
+        # label_list = []
+        # for fname in self._image_fnames:
+        #     try:
+        #         label = labels[fname.replace('\\', '/')]
+        #         label_list.append(label)
+        #     except KeyError:
+        #         continue
+        # labels = np.array(label_list)
+
         labels = [labels[fname.replace('\\', '/')] for fname in self._image_fnames]
         labels = np.array(labels)
         labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])

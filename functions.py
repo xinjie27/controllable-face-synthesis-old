@@ -26,8 +26,8 @@ class Sampler():
 
         # print(mat_paths)
         for i in range(batch_size):
-            # coeff_tensor[i] = self.sample_m_single()
-            coeff_tensor[i] = self.sample_m_single_ffhq()
+            coeff_tensor[i] = self.sample_m_single()
+            # coeff_tensor[i] = self.sample_m_single_ffhq()
         coeff_tensor = torch.from_numpy(coeff_tensor).float()
         # print(coeff_tensor)
         # print(coeff_tensor.shape)
@@ -43,7 +43,7 @@ class Sampler():
             loadmat(self.mat_list[d_delta_idx[2]])["tex"],
             loadmat(self.mat_list[d_delta_idx[3]])["angle"],
             loadmat(self.mat_list[d_delta_idx[4]])["gamma"],
-            loadmat(self.mat_list[d_delta_idx[5]])["trans"],
+            loadmat(self.mat_list[d_delta_idx[3]])["trans"],
         ]).squeeze()
 
         return coeffs
