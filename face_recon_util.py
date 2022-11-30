@@ -28,6 +28,11 @@ from Deep3DFaceRecon.util.load_mats import load_lm3d
 from Deep3DFaceRecon.util.preprocess import align_img
 from PIL import Image
 
+from torchvision.utils import save_image
+from MinimalFaceRecon.ReconModels.Model import ReconNetWrapper
+from MinimalFaceRecon.Renderer.FaceRenderer import FaceRenderer
+from MinimalFaceRecon.FaceAlignTools import create_data_reader
+
 '''
 Author: socialvv
 '''
@@ -120,13 +125,13 @@ def preprocess(img_dir):
     """
     detector = MTCNN()
 
-    img_list = glob.glob(f'{img_dir}/*/*.png')
-    # print(img_list)
+    img_list = glob.glob(f'{img_dir}/*/*.png') + glob.glob(f'{img_dir}/*/*.jpg')
+    print(img_list)
 
     for img_file in img_list:
         
         # print(img_file)
-        f_path = img_file.replace('png', 'txt')
+        f_path = img_file.replace('png', 'txt').replace("jpg", "txt")
         
         # print(f_path)
 
@@ -142,7 +147,7 @@ def preprocess(img_dir):
         try:
             facial_landmarks = detector.detect_faces(img)[0]["keypoints"]
         except IndexError:
-            # print("Error path:", img_path)
+            print("Error path:", img_path)
             continue
 
         assert len(facial_landmarks) == 5, "Incorrect number of facial landmarks"
@@ -162,9 +167,8 @@ def call_model(output_dir, img_dir):
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    # else: return
 
-    cmd = f"python Deep3DFaceRecon/test.py --name={MODEL_NAME}  --epoch={NUM_EPOCHS} --img_folder={img_dir}"
+    cmd = f"python Deep3DFaceRecon/test.py --name={MODEL_NAME}  --epoch={NUM_EPOCHS} --img_folder={img_dir} --output_dir={output_dir}"
     os.system(cmd)
 
 ### END ###
@@ -177,7 +181,7 @@ def preprocess_img(image_path, landmarks_path, lm3d_std, to_tensor = True):
     lm = np.loadtxt(landmarks_path).astype(np.float32)
     lm = lm.reshape([-1, 2])
     lm[:, -1] = H - 1 - lm[:, -1]
-    _, im, _, _ = align_img(im, lm, lm3d_std)
+    _, im, _, _ = align_img(im, lm, lm3d_std, target_size=H, rescale_factor=102.*H/224)
     if to_tensor:
         im = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
     return im
@@ -208,21 +212,21 @@ def mask_background(img_paths, coeffs_dir, size = 224):
 
     return
 
-def test_align(img_paths, coeffs_dir, size = 224):
+def test_align(img_paths, coeffs_dir, size):
     renderer = Renderer(resolution=size)
-    coeffs_paths = [f'{coeffs_dir}/{os.path.split(im)[1].replace("png","npy")}' for im in img_paths]
+    coeffs_paths = [f'{coeffs_dir}/{os.path.split(im)[-1].replace("png","mat")}' for im in img_paths]
     print(len(img_paths), len(coeffs_paths))    
     for img_path, coeffs_path in list(zip(img_paths, coeffs_paths)):
         if not os.path.exists(coeffs_path):
             continue
-        coeffs = get_coeff_npy(coeffs_path)
+        coeffs = get_coeff(coeffs_path)
         img_tensor = renderer.render(coeffs)[0]
-        output_path = f'test/align/{os.path.basename(img_path)}'
+        output_path = f'test/align/render_{os.path.basename(img_path)}'
         renderer.visualize(img_tensor, path=output_path)
         print(output_path)
     return
 
-def align(img_paths, size = 224):
+def align(img_paths, size):
     lm_paths = [im.replace("png","txt") for im in img_paths]
     opt = TestOptions().parse()
     lm3d_std = load_lm3d(opt.bfm_folder)
@@ -233,14 +237,28 @@ def align(img_paths, size = 224):
         if os.path.exists(out_path):
             continue
         if not os.path.exists(os.path.split(out_path)[0]):
-            os.mkdir(os.path.split(out_path)[0])
+            os.makedirs(os.path.split(out_path)[0])
         img_tensor = preprocess_img(img_path, landmarks_path, lm3d_std)
         
         util.save_image(util.tensor2im(img_tensor.squeeze()), out_path)
-        print(out_path)
-
+        print(f'aligned image {out_path}')
     return
 
+### END ###
+
+### FLIP DATASET ###
+
+def flip(img_dir):
+    imgs_path = get_data_path(img_dir)
+    for i,img_path in enumerate(imgs_path):
+        img = Image.open(img_path)
+        horz_img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
+        horz_img_path = os.path.splitext(img_path.split()[0])[0] + "_flipped.png"
+        horz_img.save(horz_img_path)
+        img.close()
+        horz_img.close()
+        print(f'flipped image {i}')
+    return
 ### END ###
 
 ### TEST MODULE ###
@@ -342,28 +360,24 @@ def plot_dist(coeff_list, idx=0, n_bins=50):
 if __name__ == "__main__":
     config = get_config()
     
-    # Step 1: preprocess ffhq data
-    # print("=====preprocessing=====")
-    # REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224'
-    # REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/test'
-    REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/datasets/ffhq-224x224_aligned'
-    # preprocess(REAL_IMG_DIR)
+    # # Step 0: Align dataset
+    # img_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/controllable-face-synthesis/test/align/ffhq-256x256'
+    # img_paths = get_data_path(img_dir)
+    # preprocess("MinimalFaceRecon/test_images")
+    # align(img_paths, size=256)
+    # test_align(["./test/align/ffhq-256x256_aligned/00000/img00000004.png"],"./datasets/ffhq_coeffs_224_aligned", size=256)
 
-    # Step 2: call Deep3dRecon model
-    print("Calling model...")
-    coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/SG2_Skeleton/datasets/ffhq_coeffs_224_aligned'
-    call_model(coeffs_dir, REAL_IMG_DIR)
+    # # Step 1: preprocess ffhq data
+    # # print("=====preprocessing=====")
+    REAL_IMG_DIR = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/controllable-face-synthesis/datasets/ffhq-256x256'
+    flip(REAL_IMG_DIR)
+    preprocess(REAL_IMG_DIR)
+    # call_model(coeffs_dir, REAL_IMG_DIR)
 
     # Step 3: replace background with 0 in ffhq
     # img_path = get_data_path(REAL_IMG_DIR)
     # output_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224_masked'
     # mask_background(img_path, coeffs_dir)
-
-    # Step X: Align dataset
-    # img_paths = get_data_path('/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq-224x224')
-    # coeffs_dir = '/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/GAN/datasets/ffhq_coeffs_224'
-    # test_align(img_paths, coeffs_dir)
-    # align(img_paths)
 
     # analyze data
     # coeff_list = []
@@ -374,5 +388,7 @@ if __name__ == "__main__":
 
     # # analyze(coeff_list)
     # plot_dist(coeff_list, idx=0)
+
+
 
 

@@ -82,6 +82,8 @@ class Renderer():
         util.save_image(img, path)
 
 renderer128 = Renderer(128)
+renderer256 = Renderer(256)
+renderer224 = Renderer(224)
 
 def get_coeff(mat_path):
     """
@@ -117,8 +119,8 @@ def test_single(mat_path, output_path):
     Tests the Renderer on a single image (.mat file).
     '''
     coeffs = get_coeff(mat_path)
-    r = Renderer()
-    img_t = (r.render(coeffs) + 1) / 2 
+    r = Renderer(256)
+    img_t = (r.render(coeffs)[0] + 1) / 2 
     r.visualize(img_t, output_path)
 
 # def test_sample(output_path):
@@ -146,9 +148,9 @@ if __name__ == "__main__":
 #    mat_path = config["input_path"]
 #    output_path = config["output_path"]
 
-    mat_path = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/outputs/id/ID150/real/cam3/cropped_frames0057.mat"
-    output_path = "./renderer_out/test.png"
-#    test_single(mat_path, output_path)
+    mat_path = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/controllable-face-synthesis/datasets/ffhq_coeffs_224_aligned/img00069998_flipped.mat"
+    output_path = "./test.png"
+    test_single(mat_path, output_path)
     # test_sample(output_path)
 
 #    npy_path = "/media/socialvv/d5a43ee1-58b7-4fc1-a084-7883ce143674/3DMM-StyleGAN2/datasets/3DMM_stats/3dmm_mean.npy"

@@ -193,18 +193,21 @@ def training_loop(
         print('Setting up training phases...')
     loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, augment_pipe=augment_pipe, **loss_kwargs) # subclass of training.loss.Loss
     phases = []
-    for name, module, opt_kwargs, reg_interval in [('D', D, D_opt_kwargs, D_reg_interval), ('G', G, G_opt_kwargs, G_reg_interval)]:
-        if reg_interval is None:
-            opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-            phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
-        else: # Lazy regularization.
-            mb_ratio = reg_interval / (reg_interval + 1)
-            opt_kwargs = dnnlib.EasyDict(opt_kwargs)
-            opt_kwargs.lr = opt_kwargs.lr * mb_ratio
-            opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
-            opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
-            phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
-            phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+
+
+    mb_ratio = D_reg_interval / (D_reg_interval + 1)
+    opt_kwargs = dnnlib.EasyDict(D_opt_kwargs)
+    opt_kwargs.lr = opt_kwargs.lr * mb_ratio
+    opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
+    opt = dnnlib.util.construct_class_by_name(D.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+    phases += [dnnlib.EasyDict(name='Dmain', module=D, opt=opt, interval=1)]
+    phases += [dnnlib.EasyDict(name='Dreg', module=D, opt=opt, interval=D_reg_interval)]
+
+    opt = dnnlib.util.construct_class_by_name(params=G.parameters(), **G_opt_kwargs)
+    phases += [dnnlib.EasyDict(name='Gmain', module=G, opt=opt, interval=1)]
+
+
+
     for phase in phases:
         phase.start_event = None
         phase.end_event = None
@@ -267,18 +270,45 @@ def training_loop(
 
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
-            phase_real_img, phase_real_c = next(training_set_iterator)
-            phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
-            phase_real_c = phase_real_c.to(device).split(batch_gpu)
-            all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
-            all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
+            all_gen_z = []
+            all_gen_c = []
+            all_real_img = []
+            all_real_c = []
 
-            all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
-            all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
-            all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size)]
+            D_img, D_c = next(training_set_iterator)
+            D_img = (D_img.to(device).to(torch.float32) / 127.5 - 1)
+            D_c = D_c.to(device)
+            D_G_z = torch.randn([batch_size, G.z_dim], device=device)
+            D_G_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(batch_size)]
+            D_G_c = torch.from_numpy(np.stack(D_G_c)).pin_memory().to(device)
+
+            # Dmain
+            all_real_img += [D_img.detach().clone().split(batch_gpu)]
+            all_real_c += [D_c.detach().clone().split(batch_gpu)]
+            all_gen_z += [D_G_z.detach().clone().split(batch_gpu)]
+            all_gen_c += [D_G_c.detach().clone().split(batch_gpu)]
+
+            # Dreg
+            all_real_img += [D_img.detach().clone().split(batch_gpu)]
+            all_real_c += [D_c.detach().clone().split(batch_gpu)]
+            all_gen_z += [D_G_z.detach().clone().split(batch_gpu)]
+            all_gen_c += [D_G_c.detach().clone().split(batch_gpu)]
+
+            G_img, G_c = next(training_set_iterator)
+            G_img = (G_img.to(device).to(torch.float32) / 127.5 - 1)
+            G_c = G_c.to(device)
+            G_G_z = torch.randn([batch_size, G.z_dim], device=device)
+            G_G_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(batch_size)]
+            G_G_c = torch.from_numpy(np.stack(G_G_c)).pin_memory().to(device)
+
+            # Gmain
+            all_real_img += [G_img.detach().clone().split(batch_gpu)]
+            all_real_c += [G_c.detach().clone().split(batch_gpu)]
+            all_gen_z += [G_G_z.detach().clone().split(batch_gpu)]
+            all_gen_c += [G_G_c.detach().clone().split(batch_gpu)]
 
         # Execute training phases.
-        for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
+        for phase, phase_gen_z, phase_gen_c, phase_real_img, phase_real_c in zip(phases, all_gen_z, all_gen_c, all_real_img, all_real_c):
             if batch_idx % phase.interval != 0:
                 continue
             if phase.start_event is not None:

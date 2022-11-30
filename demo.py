@@ -13,7 +13,7 @@ from torch_utils import misc
 from renderer import renderer128
 from Deep3DFaceRecon.util import util
 
-MODEL_PATH = "./training-runs/00000-ffhq-128x128-aligned-69885-gpus1-batch64-gamma1/network-snapshot-002816.pkl"
+MODEL_PATH = "./training-runs/00000-ffhq-128x128-aligned-69885-gpus1-batch64-gamma1/network-snapshot-003942.pkl"
 FILEPATH = "./datasets/ffhq_coeffs_224_aligned/*"
 
 
@@ -103,7 +103,7 @@ scale_hi = 2
 scale_lo = -1
 
 # truncation factor
-truncation_psi = 1
+truncation_psi = 0.5
 
 
 id_var = tk.DoubleVar()

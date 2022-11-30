@@ -20,7 +20,7 @@ from torch_utils.ops import conv2d_resample
 from torch_utils.ops import upfirdn2d
 from torch_utils.ops import bias_act
 from torch_utils.ops import fma
-from renderer import renderer128
+from renderer import renderer128, renderer256, renderer224
 
 #----------------------------------------------------------------------------
 
@@ -145,6 +145,7 @@ class Conv2dLayer(torch.nn.Module):
         conv_clamp      = None,         # Clamp the output to +-X, None = disable clamping.
         channels_last   = False,        # Expect the input to have memory_format=channels_last?
         trainable       = True,         # Update the weights of this layer during training?
+        lr_multiplier   = 1
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -155,14 +156,15 @@ class Conv2dLayer(torch.nn.Module):
         self.conv_clamp = conv_clamp
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
         self.padding = kernel_size // 2
-        self.weight_gain = 1 / np.sqrt(in_channels * (kernel_size ** 2))
+        self.weight_gain = lr_multiplier / np.sqrt(in_channels * (kernel_size ** 2))
+        self.bias_gain = lr_multiplier
         self.act_gain = bias_act.activation_funcs[activation].def_gain
 
         memory_format = torch.channels_last if channels_last else torch.contiguous_format
         weight = torch.randn([out_channels, in_channels, kernel_size, kernel_size]).to(memory_format=memory_format)
         bias = torch.zeros([out_channels]) if bias else None
         if trainable:
-            self.weight = torch.nn.Parameter(weight)
+            self.weight = torch.nn.Parameter(weight / lr_multiplier)
             self.bias = torch.nn.Parameter(bias) if bias is not None else None
         else:
             self.register_buffer('weight', weight)
@@ -173,7 +175,7 @@ class Conv2dLayer(torch.nn.Module):
 
     def forward(self, x, gain=1):
         w = self.weight * self.weight_gain
-        b = self.bias.to(x.dtype) if self.bias is not None else None
+        b = self.bias.to(x.dtype) * self.bias_gain if self.bias is not None else None
         flip_weight = (self.up == 1) # slightly faster
         x = conv2d_resample.conv2d_resample(x=x, w=w.to(x.dtype), f=self.resample_filter, up=self.up, down=self.down, padding=self.padding, flip_weight=flip_weight)
 
@@ -500,6 +502,7 @@ class DiscriminatorBlock(torch.nn.Module):
         use_fp16            = False,        # Use FP16 for this block?
         fp16_channels_last  = False,        # Use channels-last memory format with FP16?
         freeze_layers       = 0,            # Freeze-D: Number of layers to freeze.
+        lr_multiplier   = 1
     ):
         assert in_channels in [0, tmp_channels]
         assert architecture in ['orig', 'skip', 'resnet']
@@ -524,17 +527,17 @@ class DiscriminatorBlock(torch.nn.Module):
 
         if in_channels == 0 or architecture == 'skip':
             self.fromrgb = Conv2dLayer(img_channels, tmp_channels, kernel_size=1, activation=activation,
-                trainable=next(trainable_iter), conv_clamp=conv_clamp, channels_last=self.channels_last)
+                trainable=next(trainable_iter), conv_clamp=conv_clamp, channels_last=self.channels_last, lr_multiplier=lr_multiplier)
 
         self.conv0 = Conv2dLayer(tmp_channels, tmp_channels, kernel_size=3, activation=activation,
-            trainable=next(trainable_iter), conv_clamp=conv_clamp, channels_last=self.channels_last)
+            trainable=next(trainable_iter), conv_clamp=conv_clamp, channels_last=self.channels_last, lr_multiplier=lr_multiplier)
 
         self.conv1 = Conv2dLayer(tmp_channels, out_channels, kernel_size=3, activation=activation, down=2,
-            trainable=next(trainable_iter), resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last)
+            trainable=next(trainable_iter), resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last, lr_multiplier=lr_multiplier)
 
         if architecture == 'resnet':
             self.skip = Conv2dLayer(tmp_channels, out_channels, kernel_size=1, bias=False, down=2,
-                trainable=next(trainable_iter), resample_filter=resample_filter, channels_last=self.channels_last)
+                trainable=next(trainable_iter), resample_filter=resample_filter, channels_last=self.channels_last, lr_multiplier=lr_multiplier)
 
     def forward(self, x, img, force_fp32=False):
         if (x if x is not None else img).device.type != 'cuda':
@@ -585,7 +588,8 @@ class Encoder(torch.nn.Module):
         channel_base        = 32768,    # Overall multiplier for the number of channels.
         channel_max         = 512,      # Maximum number of channels in any layer.
         num_fp16_res        = 4,        # Use FP16 for the N highest resolutions.
-        conv_clamp          = 256       # Clamp the output of convolution layers to +-X, None = disable clamping.
+        conv_clamp          = 256,      # Clamp the output of convolution layers to +-X, None = disable clamping.
+        lr_multiplier       = 0.01 
     ):
         super().__init__()
 
@@ -605,11 +609,11 @@ class Encoder(torch.nn.Module):
             out_channels = channels_dict[res // 2]
             use_fp16 = (res >= fp16_resolution)
             block = DiscriminatorBlock(in_channels, tmp_channels, out_channels, resolution=res,
-                first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **common_kwargs)
+                first_layer_idx=cur_layer_idx, use_fp16=use_fp16, lr_multiplier=lr_multiplier, **common_kwargs)
             setattr(self, f'b{res}', block)
             cur_layer_idx += block.num_layers
 
-        self.epilog = Conv2dLayer(channels_dict[4], channels_dict[4] // 4, kernel_size=3, activation='linear', bias=False, conv_clamp=conv_clamp)
+        self.epilog = Conv2dLayer(channels_dict[4], channels_dict[4] // 4, kernel_size=3, activation='linear', bias=False, conv_clamp=conv_clamp, lr_multiplier=lr_multiplier)
 
 
        # self.fc = FullyConnectedLayer(channels_dict[4] * 16, 512, activation='lrelu')
@@ -720,6 +724,25 @@ class SynthesisNetwork(torch.nn.Module):
 #----------------------------------------------------------------------------
 
 
+class RealGenerator(torch.nn.Module):
+    def __init__(self,
+        z_dim,                      # Input latent (Z) dimensionality.
+        c_dim,                      # Conditioning label (C) dimensionality.
+        w_dim,                      # Intermediate latent (W) dimensionality.
+        img_resolution,             # Output resolution.
+        img_channels,               # Number of output color channels.
+        mapping_kwargs      = {},   # Arguments for MappingNetwork.
+        **synthesis_kwargs,         # Arguments for SynthesisNetwork.
+    ):
+        super().__init__()
+        self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
+        self.num_ws = self.synthesis.num_ws
+        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
+
+    def forward(self, x):
+        return x
+
+
 
 @persistence.persistent_class
 class Generator(torch.nn.Module):
@@ -739,14 +762,13 @@ class Generator(torch.nn.Module):
         self.w_dim = w_dim
         self.img_resolution = img_resolution
         self.img_channels = img_channels
-        self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
-        self.num_ws = self.synthesis.num_ws
-        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
-
+        
+        self.real_gen = RealGenerator(z_dim, c_dim, w_dim, img_resolution, img_channels, mapping_kwargs, **synthesis_kwargs)
+        
         self.enc = Encoder(img_resolution, gbuffer_channels, synthesis_kwargs['channel_base'], synthesis_kwargs['channel_max'], synthesis_kwargs['num_fp16_res'])
 
     def run_enc(self, m):
-        RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = renderer128.render(m)
+        RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = renderer224.render(m)
 
         Zeros = torch.ones_like(RenderedFace, device=RenderedFace.device)
         RenderedFace = RenderedFace * RenderedMask + Zeros * (1 - RenderedMask)
@@ -769,9 +791,9 @@ class Generator(torch.nn.Module):
         x, mean, RenderedFace, RenderedMask, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.run_enc(c)
         c = None
 
-        ws = self.mapping(z, mean, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        ws = self.real_gen.mapping(z, mean, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
 
-        img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.synthesis(
+        img, BlendedOutput, RenderedFace, RenderedFaceVertex, RenderedFaceTex, RenderedFaceNorm, RenderedLandmarks = self.real_gen.synthesis(
             x, 
             ws, 
             RenderedFace, 

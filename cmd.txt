@@ -6,7 +6,7 @@ python calc_metrics.py --network=./training-runs/00000-stylegan2-ffhq-256x256-gp
 
 python train.py --outdir=./training-runs --cfg=stylegan3-r --data=./datasets/ffhq-256x256.zip --gpus=1 --batch=64 --gamma=1 --mirror=1 --aug=noaug --cbase=16384 --dlr=0.0025 --tick=1 --fp32=True --batch-gpu=8
 
-python train.py --outdir=./training-runs --data=./datasets/ffhq-128x128-aligned-69885.zip --gpus=1 --batch=64 --gamma=1 --cbase=16384 --glr=0.0025 --dlr=0.0025 --mbstd-group=8 --mirror=0 --aug=noaug --tick=1 --fp32=True --batch-gpu=8 --metrics=none --cond=1
+python train.py --outdir=./training-runs --data=./datasets/ffhq-128x128-aligned-69885.zip --gpus=1 --batch=64 --gamma=1 --cbase=16384 --glr=0.0025 --dlr=0.0025 --mbstd-group=8 --mirror=0 --aug=noaug --tick=1 --fp32=True --batch-gpu=8 --cond=1
 
 
 

@@ -15,7 +15,7 @@ from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import upfirdn2d
 from mtcnn import MTCNN
-from renderer import renderer128
+from renderer import renderer128, renderer256, renderer224
 from Deep3DFaceRecon.util.load_mats import load_lm3d
 from Deep3DFaceRecon.util.preprocess import align_img
 import torchvision.transforms as T
@@ -29,7 +29,7 @@ from functions import supress_stdout
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-RDR = renderer128
+RDR = renderer224
 # DTR = MTCNN()
 
 #----------------------------------------------------------------------------
@@ -57,17 +57,17 @@ class StyleGAN2Loss:
         c = None
 
 
-        ws = self.G.mapping(z, mean, update_emas=update_emas)
+        ws = self.G.real_gen.mapping(z, mean, update_emas=update_emas)
         if self.style_mixing_prob > 0:
             with torch.autograd.profiler.record_function('style_mixing'):
                 cutoff = torch.empty([], dtype=torch.int64, device=ws.device).random_(1, ws.shape[1])
                 cutoff = torch.where(torch.rand([], device=ws.device) < self.style_mixing_prob, cutoff, torch.full_like(cutoff, ws.shape[1]))
-                ws[:, cutoff:] = self.G.mapping(torch.randn_like(z), mean, update_emas=False)[:, cutoff:]
+                ws[:, cutoff:] = self.G.real_gen.mapping(torch.randn_like(z), mean, update_emas=False)[:, cutoff:]
 
         
 
 
-        img, img_3dmm, face, vertex, tex, norm, landmarks = self.G.synthesis(
+        img, img_3dmm, face, vertex, tex, norm, landmarks = self.G.real_gen.synthesis(
             x, 
             ws, 
             RenderedFace, 
@@ -164,20 +164,40 @@ class StyleGAN2Loss:
 
 
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg):
-        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
-        if self.pl_weight == 0:
-            phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
-        if self.r1_gamma == 0:
-            phase = {'Dreg': 'none', 'Dboth': 'Dmain'}.get(phase, phase)
+        
         blur_sigma = max(1 - cur_nimg / (self.blur_fade_kimg * 1e3), 0) * self.blur_init_sigma if self.blur_fade_kimg > 0 else 0
 
-        # Gmain: Maximize logits for generated images.
-        if phase in ['Gmain', 'Gboth']:
+
+        # RealG
+        if phase in ['Gmain']:
+            #self.G.enc.requires_grad_(False)
+            with torch.autograd.profiler.record_function('Gmain_forward'):
+                gen_img = self.run_G(gen_z, gen_c, 0)[0]
+
+                gen_logits = self.run_D(gen_img, gen_c, blur_sigma=blur_sigma)
+                training_stats.report('Loss/scores/fake', gen_logits)
+                training_stats.report('Loss/signs/fake', gen_logits.sign())
+
+                loss_Gmain = torch.nn.functional.softplus(-gen_logits)
+
+                loss_Gmain = loss_Gmain # -log(sigmoid(gen_logits))
+                
+                training_stats.report('Loss/G/loss', loss_Gmain)
+            with torch.autograd.profiler.record_function('Gmain_backward'):
+                loss_Gmain.mean().mul(gain).backward()
+            #self.G.enc.requires_grad_(True)
+
+
+
+
+
+        # Enc
+           # self.G.real_gen.requires_grad_(False)
             with torch.autograd.profiler.record_function('Gmain_forward'):
                 loss_3dmm_fade_kimg = 64 * 1000 / 32
-                loss_3dmm_weight = 20 # min(cur_nimg / (loss_3dmm_fade_kimg * 1e3), 1) * 20
-
                 alpha = min(cur_nimg / (loss_3dmm_fade_kimg * 1e3), 1)
+                loss_3dmm_weight = 20 #alpha * 20
+
                 training_stats.report('Loss/alpha', alpha)
 
                 gen_img, gen_img_3dmm, _gen_ws, GBuffer_face, GBuffer_vertex, GBuffer_tex, GBuffer_norm, landmarks = self.run_G(gen_z, gen_c, alpha)
@@ -198,19 +218,22 @@ class StyleGAN2Loss:
 
                 loss_3dmm = loss_3dmm_weight * (GBuffer_face_loss + GBuffer_tex_loss + GBuffer_norm_loss)
                 loss_3dmm_detached = loss_3dmm.clone().detach()
-                for i in range(GBuffer_face_recon.shape[0]):
-                    if loss_3dmm[i] > self.mean_gbuffer_loss:
-                        if not os.path.exists(f'./test/recon/{cur_nimg}'):
-                            os.makedirs(f'./test/recon/{cur_nimg}')
-                        RDR.visualize(GBuffer_face[i], f'./test/recon/{cur_nimg}/{i}_face.png')
-                        RDR.visualize(GBuffer_face_recon[i], f'./test/recon/{cur_nimg}/{i}_face_recon.png')
-                        RDR.visualize(GBuffer_tex[i], f'./test/recon/{cur_nimg}/{i}_tex.png')
-                        RDR.visualize(GBuffer_tex_recon[i], f'./test/recon/{cur_nimg}/{i}_tex_recon.png')
-                        RDR.visualize(GBuffer_norm[i], f'./test/recon/{cur_nimg}/{i}_norm.png')
-                        RDR.visualize(GBuffer_norm_recon[i], f'./test/recon/{cur_nimg}/{i}_norm_recon.png')
-                        RDR.visualize(gen_img[i], f'./test/recon/{cur_nimg}/{i}_generated.png')
-                        RDR.visualize(gen_img_3dmm[i], f'./test/recon/{cur_nimg}/{i}_generated_blend.png')
-                        loss_3dmm[i] *= 0 # 3DMM loss clipping
+
+
+                # for i in range(GBuffer_face_recon.shape[0]):
+                #     if loss_3dmm[i] > self.mean_gbuffer_loss:
+                #         if not os.path.exists(f'./test/recon/{cur_nimg}'):
+                #             os.makedirs(f'./test/recon/{cur_nimg}')
+                #         RDR.visualize(GBuffer_face[i], f'./test/recon/{cur_nimg}/{i}_face.png')
+                #         RDR.visualize(GBuffer_face_recon[i], f'./test/recon/{cur_nimg}/{i}_face_recon.png')
+                #         RDR.visualize(GBuffer_tex[i], f'./test/recon/{cur_nimg}/{i}_tex.png')
+                #         RDR.visualize(GBuffer_tex_recon[i], f'./test/recon/{cur_nimg}/{i}_tex_recon.png')
+                #         RDR.visualize(GBuffer_norm[i], f'./test/recon/{cur_nimg}/{i}_norm.png')
+                #         RDR.visualize(GBuffer_norm_recon[i], f'./test/recon/{cur_nimg}/{i}_norm_recon.png')
+                #         RDR.visualize(gen_img[i], f'./test/recon/{cur_nimg}/{i}_generated.png')
+                #         RDR.visualize(gen_img_3dmm[i], f'./test/recon/{cur_nimg}/{i}_generated_blend.png')
+
+
 
                 # print(torch.eq(GBuffer_face_loss_detached, GBuffer_face_loss))
                 mean_gbuffer_loss = self.mean_gbuffer_loss.lerp(loss_3dmm_detached.mean(), 0.01)
@@ -227,15 +250,15 @@ class StyleGAN2Loss:
                 # training_stats.report('Loss/tex', GBuffer_tex_loss)
                 # training_stats.report('Loss/norm', GBuffer_norm_loss)
 
-                gen_logits = self.run_D(gen_img, gen_c, blur_sigma=blur_sigma)
-                training_stats.report('Loss/scores/fake', gen_logits)
-                training_stats.report('Loss/signs/fake', gen_logits.sign())
-
-                loss_Gmain = torch.nn.functional.softplus(-gen_logits) + loss_3dmm.view(loss_3dmm.shape[0], 1) # -log(sigmoid(gen_logits))
-                # print('loss_Gmain:', loss_Gmain.mean(), loss_Gmain.shape)
-                training_stats.report('Loss/G/loss', loss_Gmain)
+                loss_Gmain = loss_3dmm.view(loss_3dmm.shape[0], 1)
             with torch.autograd.profiler.record_function('Gmain_backward'):
                 loss_Gmain.mean().mul(gain).backward()
+          #  self.G.real_gen.requires_grad_(True)
+
+
+
+
+
 
         # Gpl: Apply path length regularization.
         # if phase in ['Greg', 'Gboth']:
